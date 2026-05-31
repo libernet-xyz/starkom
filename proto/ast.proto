@@ -1,0 +1,343 @@
+syntax = "proto3";
+
+package starkom.ast.v1;
+
+// Root of the AST for a single source file.
+message File {
+  Version version = 1;
+  bool custom_gates = 2;
+  bool custom_gates_declared = 3;
+  repeated string includes = 4;
+  repeated Definition definitions = 5;
+  MainComponent main_component = 6;        // absent in library-only files
+  repeated ExpressionNode expressions = 7; // expression pool
+  repeated StatementNode statements = 8;   // statement pool
+}
+
+// `pragma starkom 1.2.3`
+message Version {
+  uint32 major = 1;
+  uint32 minor = 2;
+  uint32 patch = 3;
+}
+
+message Definition {
+  oneof definition {
+    TemplateDefinition template_definition = 1;
+    FunctionDefinition function_definition = 2;
+    BusDefinition bus_definition = 3;
+  }
+}
+
+// `template [parallel] [custom] Name(params) { body }`
+message TemplateDefinition {
+  string name = 1;
+  repeated string params = 2;
+  bool is_parallel = 3;
+  bool is_custom_gate = 4;
+  uint32 body_index = 5; // index into File.statements
+}
+
+// `function Name(params) { body }`
+message FunctionDefinition {
+  string name = 1;
+  repeated string params = 2;
+  uint32 body_index = 3; // index into File.statements
+}
+
+// `bus Name(params) { body }`
+message BusDefinition {
+  string name = 1;
+  repeated string params = 2;
+  uint32 body_index = 3; // index into File.statements
+}
+
+// `component main { public [sig1, sig2] } = Template(args);`
+message MainComponent {
+  repeated string public_inputs = 1;
+  uint32 instantiation_index = 2; // index into File.expressions
+}
+
+// ─── Statement nodes ─────────────────────────────────────────────────────────
+
+message StatementNode {
+  oneof statement {
+    IfStatement if_statement = 1;
+    WhileStatement while_statement = 2;
+    ReturnStatement return_statement = 3;
+    InitializationBlock init_block = 4;
+    Declaration decl = 5;
+    Substitution substitution = 6;
+    MultiSubstitution multi_sub = 7;
+    UnderscoreSub underscore = 8;
+    ConstraintEquality constraint = 9;
+    LogCall log_call = 10;
+    Block block = 11;
+    AssertStatement assert_statement = 12;
+  }
+}
+
+message Block {
+  repeated uint32 statement_indices = 1; // indices into File.statements
+}
+
+// `if (condition) then_branch [else else_branch]`
+message IfStatement {
+  uint32 condition_index = 1;   // index into File.expressions
+  uint32 then_branch_index = 2; // index into File.statements
+  uint32 else_branch_index =
+      3; // index into File.statements; 0 = no else clause
+}
+
+// `while (condition) body`
+message WhileStatement {
+  uint32 condition_index = 1; // index into File.expressions
+  uint32 body_index = 2;      // index into File.statements
+}
+
+// `return value;`
+message ReturnStatement {
+  uint32 value_index = 1; // index into File.expressions
+}
+
+// Groups declarations sharing the same type: `var a, b = 1;` or `signal input
+// x, y;`
+message InitializationBlock {
+  VariableType xtype = 1;
+  repeated uint32 initialization_indices =
+      2; // indices into File.statements (Declaration nodes)
+}
+
+// A single variable, signal, component, or bus declaration.
+message Declaration {
+  string name = 1;
+  VariableType xtype = 2;
+  repeated uint32 dimension_indices =
+      3; // indices into File.expressions; empty for scalars
+  bool is_constant = 4;
+  bool is_anonymous = 5;
+}
+
+// Variable, signal, or component assignment.
+// Arrow direction is normalized at parse time: <== and ==> both become
+// ASSIGN_CONSTRAINT_SIGNAL; <-- and --> both become ASSIGN_SIGNAL.
+message Substitution {
+  string var = 1;
+  repeated Access accesses = 2;
+  AssignOp op = 3;
+  uint32 rhs_index = 4; // index into File.expressions
+}
+
+// Tuple assignment: `(a, b) <== expr`
+message MultiSubstitution {
+  uint32 lhs_index =
+      1; // index into File.expressions; expected to resolve to a Tuple
+  AssignOp op = 2;
+  uint32 rhs_index = 3; // index into File.expressions
+}
+
+// Discard assignment: `_ <-- expr`
+message UnderscoreSub {
+  AssignOp op = 1;
+  uint32 rhs_index = 2; // index into File.expressions
+}
+
+// `lhs === rhs`  — pure constraint, no assignment.
+message ConstraintEquality {
+  uint32 lhs_index = 1; // index into File.expressions
+  uint32 rhs_index = 2; // index into File.expressions
+}
+
+// `log(args...);`
+message LogCall { repeated LogArg args = 1; }
+
+message LogArg {
+  oneof arg {
+    uint32 expression_index = 1; // index into File.expressions
+    string text = 2;
+  }
+}
+
+// `assert(condition);`
+message AssertStatement {
+  uint32 condition_index = 1; // index into File.expressions
+}
+
+// ─── Variable types ──────────────────────────────────────────────────────────
+
+message VariableType {
+  oneof kind {
+    VarType var = 1;
+    SignalVarType signal = 2;
+    ComponentType component = 3;
+    AnonymousComponentType anonymous_component = 4;
+    BusVarType bus = 5;
+  }
+}
+
+message VarType {}
+message ComponentType {}
+message AnonymousComponentType {}
+
+enum SignalDirection {
+  SIGNAL_DIRECTION_INTERMEDIATE = 0;
+  SIGNAL_DIRECTION_INPUT = 1;
+  SIGNAL_DIRECTION_OUTPUT = 2;
+}
+
+message SignalVarType {
+  SignalDirection direction = 1;
+  repeated string tags = 2; // tag names, e.g. "binary"
+}
+
+// Bus-typed signal.
+message BusVarType {
+  string bus_name = 1;
+  SignalDirection direction = 2;
+  repeated string tags = 3;
+}
+
+// ─── Operators ───────────────────────────────────────────────────────────────
+
+enum AssignOp {
+  ASSIGN_OP_VAR = 0;               // =
+  ASSIGN_OP_SIGNAL = 1;            // <-- or --> (no constraint)
+  ASSIGN_OP_CONSTRAINT_SIGNAL = 2; // <== or ==> (constraint + assign)
+}
+
+enum InfixOpcode {
+  OPCODE_MUL = 0;         // *
+  OPCODE_DIV = 1;         // /  (field division)
+  OPCODE_ADD = 2;         // +
+  OPCODE_SUB = 3;         // -
+  OPCODE_POW = 4;         // **
+  OPCODE_INT_DIV = 5;     // \  (integer division)
+  OPCODE_MOD = 6;         // %
+  OPCODE_SHIFT_LEFT = 7;  // <<
+  OPCODE_SHIFT_RIGHT = 8; // >>
+  OPCODE_LESSER_EQ = 9;   // <=
+  OPCODE_GREATER_EQ = 10; // >=
+  OPCODE_LESSER = 11;     // <
+  OPCODE_GREATER = 12;    // >
+  OPCODE_EQ = 13;         // ==
+  OPCODE_NOT_EQ = 14;     // !=
+  OPCODE_BOOL_OR = 15;    // ||
+  OPCODE_BOOL_AND = 16;   // &&
+  OPCODE_BIT_OR = 17;     // |
+  OPCODE_BIT_AND = 18;    // &
+  OPCODE_BIT_XOR = 19;    // ^
+}
+
+enum PrefixOpcode {
+  OPCODE_NEG = 0;        // -  (unary minus)
+  OPCODE_BOOL_NOT = 1;   // !
+  OPCODE_COMPLEMENT = 2; // ~
+}
+
+// ─── Access chain ────────────────────────────────────────────────────────────
+
+// One step in a chained access on a variable: `a[i].b[j]` has four Access
+// entries.
+message Access {
+  oneof access {
+    uint32 array_index = 1;     // [expr] — index into File.expressions
+    string component_field = 2; // .name
+  }
+}
+
+// ─── Expression nodes ────────────────────────────────────────────────────────
+
+message ExpressionNode {
+  oneof expression {
+    InfixOp infix_op = 1;
+    PrefixOp prefix_op = 2;
+    InlineSwitchOp inline_switch_op = 3;
+    ParallelOp parallel_op = 4;
+    Variable variable = 5;
+    NumberLiteral number_literal = 6;
+    Call call = 7;
+    BusCall bus_call = 8;
+    AnonymousComponent anonymous_component = 9;
+    ArrayInline array_inline = 10;
+    UniformArray uniform_array = 11;
+    Tuple tuple = 12;
+  }
+}
+
+// `lhs op rhs`
+message InfixOp {
+  uint32 lhs_index = 1; // index into File.expressions
+  InfixOpcode op = 2;
+  uint32 rhs_index = 3; // index into File.expressions
+}
+
+// `op operand`
+message PrefixOp {
+  PrefixOpcode op = 1;
+  uint32 operand_index = 2; // index into File.expressions
+}
+
+// Ternary: `condition ? if_true : if_false`
+message InlineSwitchOp {
+  uint32 condition_index = 1; // index into File.expressions
+  uint32 if_true_index = 2;   // index into File.expressions
+  uint32 if_false_index = 3;  // index into File.expressions
+}
+
+// `parallel operand`
+message ParallelOp {
+  uint32 operand_index = 1; // index into File.expressions
+}
+
+// Variable or signal reference with an optional access chain: `a[i].out`
+message Variable {
+  string name = 1;
+  repeated Access accesses = 2;
+}
+
+// Arbitrary-precision integer literal stored as a decimal string.
+message NumberLiteral { string value = 1; }
+
+// Template or function call: `Name(args...)`
+message Call {
+  string callee = 1;
+  repeated uint32 args = 2; // indices into File.expressions
+}
+
+// Bus type instantiation: `BusName(args...)`
+message BusCall {
+  string callee = 1;
+  repeated uint32 args = 2; // indices into File.expressions
+}
+
+// Anonymous component: `[parallel] Name(params)(signals)`
+// Signals may be connected positionally or by name (not both in the same call).
+message AnonymousComponent {
+  string template_name = 1;
+  bool is_parallel = 2;
+  repeated uint32 params = 3;             // indices into File.expressions
+  repeated uint32 signals = 4;            // indices into File.expressions
+  repeated NamedSignal named_signals = 5; // present only for named connections
+}
+
+// One named signal connection inside an AnonymousComponent.
+message NamedSignal {
+  AssignOp op = 1;
+  string signal_name = 2;
+}
+
+// Inline array literal: `[e1, e2, e3]`
+message ArrayInline {
+  repeated uint32 values = 1; // indices into File.expressions
+}
+
+// Uniform array: `[value; count]` — `count` copies of `value`.
+message UniformArray {
+  uint32 value_index = 1; // index into File.expressions
+  uint32 count_index = 2; // index into File.expressions
+}
+
+// Tuple: `(e1, e2)`
+message Tuple {
+  repeated uint32 values = 1; // indices into File.expressions
+}

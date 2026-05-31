@@ -1,0 +1,15 @@
+pragma circom 2.0.0;
+
+template Hello() {
+  signal input x;
+
+  signal square;
+  signal cube;
+
+  square <== x * x;
+  cube <== square * x;
+
+  cube + x + 5 === 35;
+}
+
+component main = Hello();
