@@ -193,20 +193,22 @@ static SYMBOL_TOKENS: LazyLock<BTreeMap<&'static str, fn(usize) -> Token>> = Laz
 static REGEX_WHITESPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s+").unwrap());
 
 static REGEX_VERSION_NUMBER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(\d+)\.(\d+)\.(\d+)").unwrap());
+    LazyLock::new(|| Regex::new(r"^(\d{1,9})\.(\d{1,9})\.(\d{1,9})\b").unwrap());
 
 static REGEX_SINGLE_LINE_COMMENT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^//([^\n]*)(?:\n|$)").unwrap());
 
 static REGEX_MULTI_LINE_COMMENT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^/\*((?:[^*]|\*[^/])*)\*/").unwrap());
+    LazyLock::new(|| Regex::new(r"^/\*((?:[^*]|\*[^*/])*)\*/").unwrap());
 
 static REGEX_IDENTIFIER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9$_]*").unwrap());
+    LazyLock::new(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9$_]*\b").unwrap());
 
-static REGEX_NUMBER_8: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^0[0-7]+").unwrap());
-static REGEX_NUMBER_10: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:0|[1-9]\d*)").unwrap());
-static REGEX_NUMBER_16: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^0x[0-9a-fA-F]+").unwrap());
+static REGEX_NUMBER_8: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^0[0-7]+\b").unwrap());
+static REGEX_NUMBER_10: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:0|[1-9]\d*)\b").unwrap());
+static REGEX_NUMBER_16: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^0x[0-9a-fA-F]+\b").unwrap());
 
 static SYMBOLS_LEN3: LazyLock<BTreeSet<&'static str>> = LazyLock::new(|| {
     BTreeSet::from([
@@ -341,7 +343,7 @@ mod tests {
             vec![
                 Token::KeywordPragma(0),
                 Token::KeywordStarkom(7),
-                Token::VersionNumber(15, 2, 0, 0),
+                Token::VersionNumber(15, 1, 0, 0),
                 Token::Semicolon(20),
                 Token::KeywordTemplate(23),
                 Token::Identifier(32, "Hello".to_string()),

@@ -1,4 +1,4 @@
-pragma starkom 2.0.0;
+pragma starkom 1.0.0;
 
 template Hello() {
   signal input x;
