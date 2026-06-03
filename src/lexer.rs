@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 use regex::{Captures, Regex};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,10 +50,56 @@ pub enum Token {
     OperatorConstrainedAssignLeft(usize),
     OperatorConstrainedAssignRight(usize),
     OperatorConstrainedEquality(usize),
+
+    OperatorAssign(usize),
     OperatorAdd(usize),
     OperatorSubtract(usize),
     OperatorMultiply(usize),
+    OperatorPower(usize),
+    OperatorDivide(usize),
+    OperatorDivideInteger(usize),
+    OperatorModulus(usize),
+    OperatorIncrement(usize),
+    OperatorDecrement(usize),
 
+    OperatorBooleanAnd(usize),
+    OperatorBooleanOr(usize),
+    OperatorBooleanNot(usize),
+
+    OperatorBitwiseAnd(usize),
+    OperatorBitwiseOr(usize),
+    OperatorBitwiseXor(usize),
+    OperatorBitwiseNot(usize),
+    OperatorShiftLeft(usize),
+    OperatorShiftRight(usize),
+
+    OperatorCompoundAdd(usize),
+    OperatorCompoundSubtract(usize),
+    OperatorCompoundMultiply(usize),
+    OperatorCompoundPower(usize),
+    OperatorCompoundDivide(usize),
+    OperatorCompoundDivideInteger(usize),
+    OperatorCompoundModulus(usize),
+
+    OperatorCompoundBooleanAnd(usize),
+    OperatorCompoundBooleanOr(usize),
+
+    OperatorCompoundBitwiseAnd(usize),
+    OperatorCompoundBitwiseOr(usize),
+    OperatorCompoundBitwiseXor(usize),
+    OperatorCompoundShiftLeft(usize),
+    OperatorCompoundShiftRight(usize),
+
+    OperatorCompareEqual(usize),
+    OperatorCompareNotEqual(usize),
+    OperatorLessThan(usize),
+    OperatorLessThanOrEqualTo(usize),
+    OperatorGreaterThan(usize),
+    OperatorGreaterThanOrEqualTo(usize),
+
+    Dot(usize),
+    Comma(usize),
+    Colon(usize),
     Semicolon(usize),
 
     EndOfFile(usize),
@@ -92,6 +138,54 @@ static SYMBOL_TOKENS: LazyLock<BTreeMap<&'static str, fn(usize) -> Token>> = Laz
         ("<==", Token::OperatorConstrainedAssignLeft),
         ("==>", Token::OperatorConstrainedAssignRight),
         ("===", Token::OperatorConstrainedEquality),
+        ("==", Token::OperatorCompareEqual),
+        ("!=", Token::OperatorCompareNotEqual),
+        ("<=", Token::OperatorLessThanOrEqualTo),
+        ("<", Token::OperatorLessThan),
+        (">=", Token::OperatorGreaterThanOrEqualTo),
+        (">", Token::OperatorGreaterThan),
+        ("++", Token::OperatorIncrement),
+        ("--", Token::OperatorDecrement),
+        ("<<", Token::OperatorShiftLeft),
+        (">>", Token::OperatorShiftRight),
+        ("&&", Token::OperatorBooleanAnd),
+        ("||", Token::OperatorBooleanOr),
+        ("!", Token::OperatorBooleanNot),
+        ("+", Token::OperatorAdd),
+        ("-", Token::OperatorSubtract),
+        ("*", Token::OperatorMultiply),
+        ("**", Token::OperatorPower),
+        ("/", Token::OperatorDivide),
+        ("\\", Token::OperatorDivideInteger),
+        ("%", Token::OperatorModulus),
+        ("&", Token::OperatorBitwiseAnd),
+        ("|", Token::OperatorBitwiseOr),
+        ("^", Token::OperatorBitwiseXor),
+        ("~", Token::OperatorBitwiseNot),
+        ("=", Token::OperatorAssign),
+        ("+=", Token::OperatorCompoundAdd),
+        ("-=", Token::OperatorCompoundSubtract),
+        ("*=", Token::OperatorCompoundMultiply),
+        ("**=", Token::OperatorCompoundPower),
+        ("/=", Token::OperatorCompoundDivide),
+        ("\\=", Token::OperatorCompoundDivideInteger),
+        ("%=", Token::OperatorCompoundModulus),
+        ("&&=", Token::OperatorCompoundBooleanAnd),
+        ("||=", Token::OperatorCompoundBooleanOr),
+        ("&=", Token::OperatorCompoundBitwiseAnd),
+        ("|=", Token::OperatorCompoundBitwiseOr),
+        ("^=", Token::OperatorCompoundBitwiseXor),
+        ("<<=", Token::OperatorCompoundShiftLeft),
+        (">>=", Token::OperatorCompoundShiftRight),
+        ("(", Token::LeftParenthesis),
+        (")", Token::RightParenthesis),
+        ("[", Token::LeftSquareBracket),
+        ("]", Token::RightSquareBracket),
+        ("{", Token::LeftCurlyBracket),
+        ("}", Token::RightCurlyBracket),
+        (".", Token::Dot),
+        (",", Token::Comma),
+        (":", Token::Colon),
         (";", Token::Semicolon),
     ])
 });
@@ -114,10 +208,25 @@ static REGEX_NUMBER_8: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^0[0-7]+"
 static REGEX_NUMBER_10: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:0|[1-9]\d*)").unwrap());
 static REGEX_NUMBER_16: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^0x[0-9a-fA-F]+").unwrap());
 
-static REGEX_SYMBOLS_3: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<--|-->|<==|==>|===").unwrap());
+static SYMBOLS_LEN3: LazyLock<BTreeSet<&'static str>> = LazyLock::new(|| {
+    BTreeSet::from([
+        "<--", "-->", "<==", "==>", "===", "**=", "&&=", "||=", "<<=", ">>=",
+    ])
+});
 
-static REGEX_SYMBOLS_1: LazyLock<Regex> = LazyLock::new(|| Regex::new(r";").unwrap());
+static SYMBOLS_LEN2: LazyLock<BTreeSet<&'static str>> = LazyLock::new(|| {
+    BTreeSet::from([
+        "==", "!=", "<=", ">=", "++", "--", "<<", ">>", "&&", "||", "**", "+=", "-=", "*=", "/=",
+        "\\=", "%=", "&=", "|=", "^=",
+    ])
+});
+
+static SYMBOLS_LEN1: LazyLock<BTreeSet<&'static str>> = LazyLock::new(|| {
+    BTreeSet::from([
+        "<", ">", "!", "=", "+", "-", "*", "/", "\\", "%", "&", "|", "^", "~", "(", ")", "[", "]",
+        "{", "}", ".", ",", ":", ";",
+    ])
+});
 
 #[derive(Debug, Clone)]
 struct Lexer<'a> {
@@ -130,7 +239,7 @@ impl<'a> Lexer<'a> {
         Self { input, pos: 0 }
     }
 
-    fn consume_prefix<'b>(&'b mut self, pattern: &Regex) -> Option<(usize, Captures<'b>)> {
+    fn consume_prefix(&mut self, pattern: &Regex) -> Option<(usize, Captures<'a>)> {
         let start_pos = self.pos;
         match pattern.captures(self.input) {
             Some(captures) => {
@@ -143,14 +252,42 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    fn consume_any_prefix(
+        &mut self,
+        prefixes: &BTreeSet<&'static str>,
+    ) -> Option<(usize, &'a str)> {
+        for &prefix in prefixes {
+            if self.input.starts_with(prefix) {
+                let result = (self.pos, &self.input[0..prefix.len()]);
+                self.input = &self.input[prefix.len()..];
+                self.pos += prefix.len();
+                return Some(result);
+            }
+        }
+        None
+    }
+
+    fn consume_symbol(&mut self) -> Option<(usize, &'a str)> {
+        if let Some((pos, prefix)) = self.consume_any_prefix(&SYMBOLS_LEN3) {
+            return Some((pos, prefix));
+        }
+        if let Some((pos, prefix)) = self.consume_any_prefix(&SYMBOLS_LEN2) {
+            return Some((pos, prefix));
+        }
+        if let Some((pos, prefix)) = self.consume_any_prefix(&SYMBOLS_LEN1) {
+            return Some((pos, prefix));
+        }
+        None
+    }
+
     fn parse_usize(s: &str) -> usize {
         usize::from_str_radix(s, 10).unwrap()
     }
 
     fn tokenize(mut self) -> Result<Vec<Token>> {
         let mut tokens = Vec::new();
+        self.consume_prefix(&REGEX_WHITESPACE);
         while !self.input.is_empty() {
-            self.consume_prefix(&REGEX_WHITESPACE);
             if let Some((pos, captures)) = self.consume_prefix(&REGEX_VERSION_NUMBER) {
                 tokens.push(Token::VersionNumber(
                     pos,
@@ -174,21 +311,13 @@ impl<'a> Lexer<'a> {
                 tokens.push(Token::Number16(pos, captures[0].to_string()));
             } else if let Some((pos, captures)) = self.consume_prefix(&REGEX_NUMBER_10) {
                 tokens.push(Token::Number10(pos, captures[0].to_string()));
-            } else if let Some((pos, captures)) = self.consume_prefix(&REGEX_SYMBOLS_3) {
-                let capture = &captures[0];
-                match SYMBOL_TOKENS.get(capture) {
-                    Some(token) => tokens.push(token(pos)),
-                    None => return Err(anyhow!("syntax error")),
-                };
-            } else if let Some((pos, captures)) = self.consume_prefix(&REGEX_SYMBOLS_1) {
-                let capture = &captures[0];
-                match SYMBOL_TOKENS.get(capture) {
-                    Some(token) => tokens.push(token(pos)),
-                    None => return Err(anyhow!("syntax error")),
-                };
+            } else if let Some((pos, symbol)) = self.consume_symbol() {
+                let token = SYMBOL_TOKENS.get(symbol).unwrap();
+                tokens.push(token(pos));
             } else {
-                return Err(anyhow!("syntax error"));
+                return Err(anyhow!("syntax error at offset {}", self.pos));
             }
+            self.consume_prefix(&REGEX_WHITESPACE);
         }
         tokens.push(Token::EndOfFile(self.pos));
         Ok(tokens)
@@ -207,8 +336,59 @@ mod tests {
 
     #[test]
     fn test_hello() {
-        let tokens = tokenize(HELLO).unwrap();
-        // TODO
+        assert_eq!(
+            tokenize(HELLO).unwrap(),
+            vec![
+                Token::KeywordPragma(0),
+                Token::KeywordStarkom(7),
+                Token::VersionNumber(15, 2, 0, 0),
+                Token::Semicolon(20),
+                Token::KeywordTemplate(23),
+                Token::Identifier(32, "Hello".to_string()),
+                Token::LeftParenthesis(37),
+                Token::RightParenthesis(38),
+                Token::LeftCurlyBracket(40),
+                Token::KeywordSignal(44),
+                Token::KeywordInput(51),
+                Token::Identifier(57, "x".to_string()),
+                Token::Semicolon(58),
+                Token::KeywordSignal(63),
+                Token::Identifier(70, "square".to_string()),
+                Token::Semicolon(76),
+                Token::KeywordSignal(80),
+                Token::Identifier(87, "cube".to_string()),
+                Token::Semicolon(91),
+                Token::Identifier(96, "square".to_string()),
+                Token::OperatorConstrainedAssignLeft(103),
+                Token::Identifier(107, "x".to_string()),
+                Token::OperatorMultiply(109),
+                Token::Identifier(111, "x".to_string()),
+                Token::Semicolon(112),
+                Token::Identifier(116, "cube".to_string()),
+                Token::OperatorConstrainedAssignLeft(121),
+                Token::Identifier(125, "square".to_string()),
+                Token::OperatorMultiply(132),
+                Token::Identifier(134, "x".to_string()),
+                Token::Semicolon(135),
+                Token::Identifier(140, "cube".to_string()),
+                Token::OperatorAdd(145),
+                Token::Identifier(147, "x".to_string()),
+                Token::OperatorAdd(149),
+                Token::Number10(151, "5".to_string()),
+                Token::OperatorConstrainedEquality(153),
+                Token::Number10(157, "35".to_string()),
+                Token::Semicolon(159),
+                Token::RightCurlyBracket(161),
+                Token::KeywordComponent(164),
+                Token::Identifier(174, "main".to_string()),
+                Token::OperatorAssign(179),
+                Token::Identifier(181, "Hello".to_string()),
+                Token::LeftParenthesis(186),
+                Token::RightParenthesis(187),
+                Token::Semicolon(188),
+                Token::EndOfFile(190),
+            ]
+        );
     }
 
     // TODO
