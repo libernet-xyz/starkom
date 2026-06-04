@@ -1,0 +1,44 @@
+pragma starkom 1.0.0;
+
+function Statements(x, n) {
+  // empty statement
+  ;
+
+  // if without else
+  if (x) { log x; }
+
+  // if with else
+  if (x) { log x; } else { log n; }
+
+  // while
+  while (x) { x = x - 1; }
+
+  // do-while
+  do { x = x - 1; } while (x);
+
+  // for with all parts
+  for (var i = 0; i < n; i = i + 1) { log i; }
+
+  // for with only an initializer (loops indefinitely)
+  for (var j = 0;;) { break; }
+
+  // for with all parts empty (loops indefinitely)
+  for (;;) { break; }
+
+  // continue
+  while (x) { continue; }
+
+  // assert
+  assert x;
+
+  // return
+  return x;
+}
+
+template Declarations() {
+  var v;
+  var vi = 5;
+  const c = 42;
+  signal output y;
+  component comp;
+}

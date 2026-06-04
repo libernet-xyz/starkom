@@ -1,0 +1,59 @@
+pragma starkom 1.0.0;
+
+template Literals() {
+  var t = true;
+  var f = false;
+  var h = 0xFF;
+  var o = 077;
+  var s = "hello";
+}
+
+template Arithmetic() {
+  var a = 2 ** 3;
+  var b = 10 / 2;
+  var c = 10 \ 3;
+  var d = 10 % 3;
+  var e = 5 - 2;
+  var f = 1 << 4;
+  var g = 16 >> 2;
+}
+
+template Comparisons() {
+  var lt = 1 < 2;
+  var le = 1 <= 2;
+  var gt = 2 > 1;
+  var ge = 2 >= 1;
+  var eq = 1 == 1;
+  var ne = 1 != 2;
+}
+
+template Collections() {
+  var empty_arr = [];
+  var one_arr = [1];
+  var multi_arr = [1, 2, 3];
+  var trailing = [1, 2,];
+  var empty_tup = ();
+  var one_tup = (1,);
+  var two_tup = (1, 2);
+  var sub = (1 + 2);
+}
+
+template Postfix() {
+  var a = foo.bar;
+  var b = arr[0];
+  var c = f(1, 2);
+  var d = g();
+}
+
+template Prefix() {
+  var a = ++x;
+  var b = --x;
+  var c = !x;
+  var d = ~x;
+  var e = +x;
+  var f = -x;
+}
+
+template Power() {
+  var a = 2 ** 3 ** 4;
+}
