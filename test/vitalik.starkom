@@ -1,0 +1,18 @@
+// This is the circuit from Vitalik's PLONK tutorial. See
+// https://vitalik.eth.limo/general/2019/09/22/plonk.html#how-plonk-works
+
+pragma starkom 1.0.0;
+
+template Vitalik() {
+  signal input x;
+
+  signal square;
+  signal cube;
+
+  square <== x * x;
+  cube <== square * x;
+
+  cube + x + 5 === 35;
+}
+
+component main = Vitalik();
