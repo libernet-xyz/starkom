@@ -209,7 +209,7 @@ impl<'a> Parser<'a> {
         (&self.statements[index], index)
     }
 
-    fn frame<'b>(&'b mut self) -> NodeFrame {
+    fn frame(&mut self) -> NodeFrame {
         self.skip_comments();
         NodeFrame {
             pos: self.tokens[0].pos,

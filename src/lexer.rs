@@ -416,7 +416,7 @@ impl<'a> Lexer<'a> {
     }
 }
 
-/// Reads an input Starkon source file and produces the corresponding array of lexical tokens.
+/// Reads an input Starkom source file and produces the corresponding array of lexical tokens.
 pub fn tokenize(path: &str, input: &str) -> Result<(Vec<TokenEntry>, Vec<usize>)> {
     Lexer::new(path, input).tokenize()
 }

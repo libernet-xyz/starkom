@@ -5,25 +5,25 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 #[derive(Debug, Clone)]
 pub struct Error {
-    path: String,
+    file_path: String,
     row: usize,
     column: usize,
     message: String,
 }
 
 impl Error {
-    pub fn new(path: String, message: String, offset: usize, line_starts: &[usize]) -> Self {
+    pub fn new(file_path: String, message: String, offset: usize, line_starts: &[usize]) -> Self {
         let (row, column) = get_text_coordinates_from_offset(offset, line_starts);
         Self {
-            path,
+            file_path,
             row,
             column,
             message,
         }
     }
 
-    pub fn path_ref(&self) -> &str {
-        self.path.as_str()
+    pub fn file_path_ref(&self) -> &str {
+        self.file_path.as_str()
     }
 
     pub fn message_ref(&self) -> &str {
@@ -33,8 +33,8 @@ impl Error {
 
 #[wasm_bindgen]
 impl Error {
-    pub fn path(&self) -> String {
-        self.path.clone()
+    pub fn file_path(&self) -> String {
+        self.file_path.clone()
     }
 
     pub fn row_number(&self) -> usize {
@@ -64,8 +64,8 @@ mod tests {
             42,
             &[0, 10, 20, 30, 40, 50, 60],
         );
-        assert_eq!(error.path_ref(), "foo/bar.baz");
-        assert_eq!(error.path(), "foo/bar.baz");
+        assert_eq!(error.file_path_ref(), "foo/bar.baz");
+        assert_eq!(error.file_path(), "foo/bar.baz");
         assert_eq!(error.row_number(), 4);
         assert_eq!(error.column_number(), 2);
         assert_eq!(error.message_ref(), "lorem ipsum dolor");
