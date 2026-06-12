@@ -255,9 +255,8 @@ message NumericLiteral {
 
 // String literals, e.g. "hello".
 message StringLiteral {
-  // The literal string, stored here without quotes and with all escapes already processed. For
-  // example, if the literal found in the source code was "foo \"bar\"" then in this field we store
-  // `foo "bar"` (without backticks).
+  // The literal string, stored here exactly how it's found in the original source: in quoted form
+  // and with all escapes unprocessed.
   string value = 1;
 }
 
@@ -328,23 +327,25 @@ message PostfixChainExpression {
 // not, unary plus, and unary minus.
 message PrefixChainExpression {
   enum Type {
+    PREFIX_EXRESSION_INVALID = 0;
+
     // `++a`
-    PREFIX_EXRESSION_INCREMENT = 0;
+    PREFIX_EXRESSION_INCREMENT = 1;
 
     // `--a`
-    PREFIX_EXRESSION_DECREMENT = 1;
+    PREFIX_EXRESSION_DECREMENT = 2;
 
     // `!a`
-    PREFIX_EXRESSION_LOGICAL_NOT = 2;
+    PREFIX_EXRESSION_LOGICAL_NOT = 3;
 
     // `~a`
-    PREFIX_EXRESSION_BITWISE_NOT = 3;
+    PREFIX_EXRESSION_BITWISE_NOT = 4;
 
     // `+a`
-    PREFIX_EXRESSION_UNARY_PLUS = 4;
+    PREFIX_EXRESSION_UNARY_PLUS = 5;
 
     // `-a`
-    PREFIX_EXRESSION_UNARY_MINUS = 5;
+    PREFIX_EXRESSION_UNARY_MINUS = 6;
   }
 
   uint32 operand = 1;  // index into File.expressions
