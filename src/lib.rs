@@ -15,12 +15,15 @@ pub mod ast {
 }
 
 #[wasm_bindgen]
-pub struct TextCoordinates(pub usize, pub usize);
+pub struct TextCoordinates {
+    pub row: usize,
+    pub col: usize,
+}
 
 #[wasm_bindgen]
 pub fn get_text_coordinates_from_offset(offset: usize, line_starts: &[usize]) -> TextCoordinates {
     let (row, col) = utils::get_text_coordinates_from_offset(offset, line_starts);
-    TextCoordinates(row, col)
+    TextCoordinates { row, col }
 }
 
 #[wasm_bindgen]
@@ -35,7 +38,7 @@ mod tests {
 
     fn get_text_coordinates_helper(offset: usize, line_starts: &[usize]) -> (usize, usize) {
         let coordinates = get_text_coordinates_from_offset(offset, line_starts);
-        (coordinates.0, coordinates.1)
+        (coordinates.row, coordinates.col)
     }
 
     #[test]
