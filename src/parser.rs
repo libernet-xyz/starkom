@@ -1240,6 +1240,7 @@ impl<'a> Parser<'a> {
         expect_token!(self, LeftParenthesis, "`(`");
         let condition_index = self.parse_expression()?;
         expect_token!(self, RightParenthesis, "`)`");
+        expect_token!(self, Semicolon, "semicolon");
         Ok(frame.make_statement(
             self,
             ast::statement_node::Statement::DoWhileLoopStatement(ast::DoWhileLoopStatement {
