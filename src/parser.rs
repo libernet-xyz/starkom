@@ -28,13 +28,11 @@ impl NodeFrame {
         if !parser.with_ranges {
             return None;
         }
-        static TRAILING_WHITESPACE_PATTERN: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"\s*$").unwrap());
+        static TRAILING_PATTERN: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"(?:\s|//[^\n]*|/\*(?:[^*]|\*+[^/*])*\*+/)*$").unwrap());
         let pos = parser.tokens[0].pos;
         let slice = &parser.input[0..pos];
-        let trailing = TRAILING_WHITESPACE_PATTERN
-            .find(slice)
-            .map_or(0, |m| m.len());
+        let trailing = TRAILING_PATTERN.find(slice).map_or(0, |m| m.len());
         let length = pos - trailing - self.pos;
         Some(ast::Range {
             offset: self.pos as u32,
@@ -2538,9 +2536,20 @@ mod tests {
         parse("test", source, false).unwrap()
     }
 
+    fn p_ranges(source: &str) -> ast::File {
+        parse("test", source, true).unwrap()
+    }
+
     // Wrap a body string in a minimal template for expression/statement tests.
     fn in_template(body: &str) -> ast::File {
         p(&format!(
+            "pragma starkom 0.0.0;\ntemplate T() {{ {} }}",
+            body
+        ))
+    }
+
+    fn in_template_ranges(body: &str) -> ast::File {
+        p_ranges(&format!(
             "pragma starkom 0.0.0;\ntemplate T() {{ {} }}",
             body
         ))
@@ -3513,6 +3522,74 @@ mod tests {
                     ),
                 ],
             },
+        );
+    }
+
+    #[test]
+    fn test_if_without_else_range_single_line_comment() {
+        let file = in_template_ranges("if (x) { ; } // comment\n;");
+        let if_statement = file
+            .statements
+            .iter()
+            .find(|statement| {
+                matches!(
+                    statement.statement,
+                    Some(ast::statement_node::Statement::IfStatement(_))
+                )
+            })
+            .expect("if statement not found in pool");
+        assert_eq!(
+            if_statement.range,
+            Some(ast::Range {
+                offset: 37,
+                length: 12
+            })
+        );
+    }
+
+    #[test]
+    fn test_if_without_else_range_multi_line_comment() {
+        let file = in_template_ranges("if (x) { ; } /* comment */\n;");
+        let if_statement = file
+            .statements
+            .iter()
+            .find(|statement| {
+                matches!(
+                    statement.statement,
+                    Some(ast::statement_node::Statement::IfStatement(_))
+                )
+            })
+            .expect("if statement not found in pool");
+        assert_eq!(
+            if_statement.range,
+            Some(ast::Range {
+                offset: 37,
+                length: 12
+            })
+        );
+    }
+
+    #[test]
+    fn test_if_without_else_range_mixed_trailing_content() {
+        // Trailing content: whitespace, single-line comment, more whitespace, multi-line comment,
+        // more whitespace.
+        let file = in_template_ranges("if (x) { ; }\n// comment\n\n/* block */\n;");
+        let if_statement = file
+            .statements
+            .iter()
+            .find(|statement| {
+                matches!(
+                    statement.statement,
+                    Some(ast::statement_node::Statement::IfStatement(_))
+                )
+            })
+            .expect("if statement not found in pool");
+        assert_eq!(
+            if_statement.range,
+            Some(ast::Range {
+                offset: 37,
+                length: 12
+            })
         );
     }
 }
