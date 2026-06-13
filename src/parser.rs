@@ -3,6 +3,7 @@ use crate::error::{Error, Result};
 use crate::lexer::tokenize;
 use regex::Regex;
 use std::sync::LazyLock;
+use wasm_bindgen::prelude::*;
 
 trait VecUsizeToU32 {
     fn to_u32(self) -> Vec<u32>;
@@ -1658,16 +1659,30 @@ impl<'a> Parser<'a> {
     }
 }
 
+#[wasm_bindgen]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct Settings {
+    pub with_tokens: bool,
+    pub with_ranges: bool,
+}
+
 /// Parses a Starkom source file, returning the parsed AST.
 ///
-/// If `with_tokens` is true the returned `ast::File` proto contains the original lexical tokens in
-/// the `tokens` field.
+/// If `settings.with_tokens` is true the returned `ast::File` proto contains the original lexical
+/// tokens in the `tokens` field.
 ///
-/// If `with_ranges` is true the returned AST is decorated with information about where each node is
-/// located the in the source.
-pub fn parse(path: &str, input: &str, with_tokens: bool, with_ranges: bool) -> Result<ast::File> {
+/// If `settings.with_ranges` is true the returned AST is decorated with information about where
+/// each node is located the in the source.
+pub fn parse(path: &str, input: &str, settings: Settings) -> Result<ast::File> {
     let (tokens, line_starts) = tokenize(path, input)?;
-    let parser = Parser::new(path, input, tokens, line_starts, with_tokens, with_ranges);
+    let parser = Parser::new(
+        path,
+        input,
+        tokens,
+        line_starts,
+        settings.with_tokens,
+        settings.with_ranges,
+    );
     parser.parse()
 }
 
@@ -2575,11 +2590,27 @@ mod tests {
 
     // Parse a source string and panic on error; all test-only parse calls go through here.
     fn p(source: &str) -> ast::File {
-        parse("test", source, false, false).unwrap()
+        parse(
+            "test",
+            source,
+            Settings {
+                with_tokens: false,
+                with_ranges: false,
+            },
+        )
+        .unwrap()
     }
 
     fn p_ranges(source: &str) -> ast::File {
-        parse("test", source, false, true).unwrap()
+        parse(
+            "test",
+            source,
+            Settings {
+                with_tokens: false,
+                with_ranges: true,
+            },
+        )
+        .unwrap()
     }
 
     // Wrap a body string in a minimal template for expression/statement tests.
@@ -2702,8 +2733,10 @@ mod tests {
             parse(
                 "test",
                 "pragma starkom 0.0.0;\ncomponent main = T();\ncomponent main = T();\n",
-                false,
-                false
+                Settings {
+                    with_tokens: false,
+                    with_ranges: false
+                },
             )
             .is_err()
         );
@@ -3364,20 +3397,44 @@ mod tests {
     #[test]
     fn test_statements_fixture() {
         static SRC: &str = include_str!("../test/statements.starkom");
-        parse("statements.starkom", SRC, false, false).unwrap();
+        parse(
+            "statements.starkom",
+            SRC,
+            Settings {
+                with_tokens: false,
+                with_ranges: false,
+            },
+        )
+        .unwrap();
     }
 
     #[test]
     fn test_expressions_fixture() {
         static SRC: &str = include_str!("../test/expressions.starkom");
-        parse("statements.starkom", SRC, false, false).unwrap();
+        parse(
+            "statements.starkom",
+            SRC,
+            Settings {
+                with_tokens: false,
+                with_ranges: false,
+            },
+        )
+        .unwrap();
     }
 
     #[test]
     fn test_vitalik() {
         static VITALIK: &'static str = include_str!("../test/vitalik.starkom");
         assert_ast_eq(
-            &parse("vitalik.starkom", VITALIK, false, false).unwrap(),
+            &parse(
+                "vitalik.starkom",
+                VITALIK,
+                Settings {
+                    with_tokens: false,
+                    with_ranges: false,
+                },
+            )
+            .unwrap(),
             &ast::File {
                 path: "vitalik.starkom".to_string(),
                 line_starts: vec![],
@@ -3490,7 +3547,15 @@ mod tests {
     fn test_vitalik_with_tokens() {
         static VITALIK: &'static str = include_str!("../test/vitalik.starkom");
         assert_ast_eq(
-            &parse("vitalik.starkom", VITALIK, true, false).unwrap(),
+            &parse(
+                "vitalik.starkom",
+                VITALIK,
+                Settings {
+                    with_tokens: true,
+                    with_ranges: false,
+                },
+            )
+            .unwrap(),
             &ast::File {
                 path: "vitalik.starkom".to_string(),
                 line_starts: vec![],
@@ -3646,7 +3711,15 @@ mod tests {
     fn test_vitalik_with_ranges() {
         static VITALIK: &'static str = include_str!("../test/vitalik.starkom");
         assert_ast_eq(
-            &parse("vitalik.starkom", VITALIK, false, true).unwrap(),
+            &parse(
+                "vitalik.starkom",
+                VITALIK,
+                Settings {
+                    with_tokens: false,
+                    with_ranges: true,
+                },
+            )
+            .unwrap(),
             &ast::File {
                 path: "vitalik.starkom".to_string(),
                 line_starts: vec![
