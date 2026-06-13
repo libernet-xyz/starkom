@@ -3,7 +3,6 @@ use crate::error::{Error, Result};
 use crate::lexer::tokenize;
 use regex::Regex;
 use std::sync::LazyLock;
-use wasm_bindgen::prelude::*;
 
 trait VecUsizeToU32 {
     fn to_u32(self) -> Vec<u32>;
@@ -1659,7 +1658,6 @@ impl<'a> Parser<'a> {
     }
 }
 
-#[wasm_bindgen]
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 pub struct Settings {
     pub with_tokens: bool,

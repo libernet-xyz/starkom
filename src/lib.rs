@@ -14,8 +14,6 @@ pub mod ast {
     include!(concat!(env!("OUT_DIR"), "/starkom.ast.v1.rs"));
 }
 
-pub use parser::Settings as ParserSettings;
-
 impl ast::Token {
     pub fn token_type(&self) -> ast::token::Type {
         ast::token::Type::try_from(self.r#type).unwrap_or_default()
@@ -35,8 +33,33 @@ pub fn get_text_coordinates_from_offset(offset: usize, line_starts: &[usize]) ->
 }
 
 #[wasm_bindgen]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+pub struct ParserSettings {
+    pub with_tokens: bool,
+    pub with_ranges: bool,
+}
+
+#[wasm_bindgen]
+impl ParserSettings {
+    #[wasm_bindgen(constructor)]
+    pub fn new(with_tokens: bool, with_ranges: bool) -> Self {
+        Self {
+            with_tokens,
+            with_ranges,
+        }
+    }
+}
+
+#[wasm_bindgen]
 pub fn parse(path: &str, source: &str, settings: ParserSettings) -> Result<Vec<u8>, Error> {
-    let ast = parser::parse(path, source, settings)?;
+    let ast = parser::parse(
+        path,
+        source,
+        parser::Settings {
+            with_tokens: settings.with_tokens,
+            with_ranges: settings.with_ranges,
+        },
+    )?;
     Ok(ast.encode_to_vec())
 }
 
@@ -74,7 +97,7 @@ mod tests {
         let ast = parser::parse(
             "vitalik.starkom",
             VITALIK,
-            ParserSettings {
+            parser::Settings {
                 with_tokens,
                 with_ranges,
             },
@@ -83,10 +106,7 @@ mod tests {
         let encoded = parse(
             "vitalik.starkom",
             VITALIK,
-            ParserSettings {
-                with_tokens,
-                with_ranges,
-            },
+            ParserSettings::new(with_tokens, with_ranges),
         )
         .unwrap();
         assert_eq!(ast::File::decode(encoded.as_slice()).unwrap(), ast);
