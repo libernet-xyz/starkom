@@ -28,6 +28,8 @@ impl NodeFrame {
         if !parser.with_ranges {
             return None;
         }
+        // The following pattern is used to trim all trailing whitespaces, single-line comments, and
+        // multi-line comments so that the final range is accurate.
         static TRAILING_PATTERN: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"(?:\s|//[^\n]*|/\*(?:[^*]|\*+[^/*])*\*+/)*$").unwrap());
         let pos = parser.tokens[parser.pos].offset as usize;

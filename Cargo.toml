@@ -11,6 +11,8 @@ edition = "2024"
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
+anyhow = "1.0.102"
+ff = "0.14.0"
 prost = "0.14.3"
 regex = "1.12.3"
 wasm-bindgen = "0.2.123"

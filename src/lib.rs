@@ -5,6 +5,11 @@ use error::Error;
 use prost::{self, Message};
 use wasm_bindgen::prelude::*;
 
+mod compiler;
+mod context;
+mod expr;
+mod values;
+
 pub mod error;
 pub mod lexer;
 pub mod parser;
