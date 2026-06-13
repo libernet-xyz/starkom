@@ -30,7 +30,7 @@ impl NodeFrame {
         }
         static TRAILING_PATTERN: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"(?:\s|//[^\n]*|/\*(?:[^*]|\*+[^/*])*\*+/)*$").unwrap());
-        let pos = parser.tokens[0].offset as usize;
+        let pos = parser.tokens[parser.pos].offset as usize;
         let slice = &parser.input[0..pos];
         let trailing = TRAILING_PATTERN.find(slice).map_or(0, |m| m.len());
         let length = pos - trailing - self.pos;
@@ -93,6 +93,9 @@ struct Parser<'a> {
     /// Path of the source file being parsed.
     path: &'a str,
 
+    /// Indicates whether to include the raw lexical tokens in the parsed AST.
+    with_tokens: bool,
+
     /// Indicates whether to include range information in the parsed AST.
     with_ranges: bool,
 
@@ -100,7 +103,10 @@ struct Parser<'a> {
     input: &'a str,
 
     /// Token array output by the lexer.
-    tokens: &'a [Token],
+    tokens: Vec<Token>,
+
+    /// Index of the current token. We move this forward as we consume tokens.
+    pos: usize,
 
     /// Line start offsets, as per the corresponding field in the root AST node. Must be empty if
     /// `with_ranges` is false.
@@ -121,15 +127,18 @@ impl<'a> Parser<'a> {
     fn new(
         path: &'a str,
         input: &'a str,
-        tokens: &'a [Token],
-        with_ranges: bool,
+        tokens: Vec<Token>,
         line_starts: Vec<usize>,
+        with_tokens: bool,
+        with_ranges: bool,
     ) -> Self {
         Self {
             path,
+            with_tokens,
             with_ranges,
             input,
             tokens,
+            pos: 0,
             line_starts,
             main_component: None,
 
@@ -144,18 +153,18 @@ impl<'a> Parser<'a> {
         Err(Error::new(
             self.path.to_string(),
             message.to_string(),
-            self.tokens[0].offset as usize,
+            self.tokens[self.pos].offset as usize,
             self.line_starts.as_slice(),
         ))
     }
 
     fn advance(&mut self) {
-        self.tokens = &self.tokens[1..];
+        self.pos += 1;
     }
 
     fn skip_comments(&mut self) {
         while !self.tokens.is_empty() {
-            match self.tokens[0].token_type() {
+            match self.tokens[self.pos].token_type() {
                 TokenType::TokenTypeSingleLineComment | TokenType::TokenTypeMultiLineComment => {
                     self.advance()
                 }
@@ -169,7 +178,7 @@ impl<'a> Parser<'a> {
         if self.tokens.is_empty() {
             return self.error("unexpected end of file");
         }
-        Ok(self.tokens[0].token_type())
+        Ok(self.tokens[self.pos].token_type())
     }
 
     fn next_token_and_label(&mut self) -> Result<(TokenType, &str)> {
@@ -177,8 +186,8 @@ impl<'a> Parser<'a> {
         if self.tokens.is_empty() {
             return self.error("unexpected end of file");
         }
-        let token = &self.tokens[0];
         self.advance();
+        let token = &self.tokens[self.pos - 1];
         Ok((token.token_type(), token.label.as_str()))
     }
 
@@ -216,7 +225,7 @@ impl<'a> Parser<'a> {
     fn frame(&mut self) -> NodeFrame {
         self.skip_comments();
         NodeFrame {
-            pos: self.tokens[0].offset as usize,
+            pos: self.tokens[self.pos].offset as usize,
         }
     }
 
@@ -1617,7 +1626,7 @@ impl<'a> Parser<'a> {
                     };
                 }
                 TokenType::TokenTypeEndOfFile => {
-                    assert_eq!(self.tokens.len(), 1);
+                    assert_eq!(self.pos, self.tokens.len() - 1);
                     return Ok(ast::File {
                         path: self.path.to_string(),
                         line_starts: if self.with_ranges {
@@ -1628,7 +1637,11 @@ impl<'a> Parser<'a> {
                         } else {
                             vec![]
                         },
-                        tokens: self.tokens.to_owned(),
+                        tokens: if self.with_tokens {
+                            self.tokens
+                        } else {
+                            vec![]
+                        },
                         version: Some(version),
                         includes,
                         definitions,
@@ -1647,11 +1660,14 @@ impl<'a> Parser<'a> {
 
 /// Parses a Starkom source file, returning the parsed AST.
 ///
+/// If `with_tokens` is true the returned `ast::File` proto contains the original lexical tokens in
+/// the `tokens` field.
+///
 /// If `with_ranges` is true the returned AST is decorated with information about where each node is
 /// located the in the source.
-pub fn parse(path: &str, input: &str, with_ranges: bool) -> Result<ast::File> {
+pub fn parse(path: &str, input: &str, with_tokens: bool, with_ranges: bool) -> Result<ast::File> {
     let (tokens, line_starts) = tokenize(path, input)?;
-    let parser = Parser::new(path, input, tokens.as_slice(), with_ranges, line_starts);
+    let parser = Parser::new(path, input, tokens, line_starts, with_tokens, with_ranges);
     parser.parse()
 }
 
@@ -2072,6 +2088,7 @@ mod tests {
 
     fn assert_ast_eq(lhs: &ast::File, rhs: &ast::File) {
         assert_eq!(lhs.line_starts, rhs.line_starts);
+        assert_eq!(lhs.tokens, rhs.tokens);
         assert_eq!(lhs.version, rhs.version);
         assert_eq!(lhs.includes, rhs.includes);
 
@@ -2558,11 +2575,11 @@ mod tests {
 
     // Parse a source string and panic on error; all test-only parse calls go through here.
     fn p(source: &str) -> ast::File {
-        parse("test", source, false).unwrap()
+        parse("test", source, false, false).unwrap()
     }
 
     fn p_ranges(source: &str) -> ast::File {
-        parse("test", source, true).unwrap()
+        parse("test", source, false, true).unwrap()
     }
 
     // Wrap a body string in a minimal template for expression/statement tests.
@@ -2685,6 +2702,7 @@ mod tests {
             parse(
                 "test",
                 "pragma starkom 0.0.0;\ncomponent main = T();\ncomponent main = T();\n",
+                false,
                 false
             )
             .is_err()
@@ -3346,20 +3364,289 @@ mod tests {
     #[test]
     fn test_statements_fixture() {
         static SRC: &str = include_str!("../test/statements.starkom");
-        parse("statements.starkom", SRC, false).unwrap();
+        parse("statements.starkom", SRC, false, false).unwrap();
     }
 
     #[test]
     fn test_expressions_fixture() {
         static SRC: &str = include_str!("../test/expressions.starkom");
-        parse("statements.starkom", SRC, false).unwrap();
+        parse("statements.starkom", SRC, false, false).unwrap();
+    }
+
+    #[test]
+    fn test_vitalik() {
+        static VITALIK: &'static str = include_str!("../test/vitalik.starkom");
+        assert_ast_eq(
+            &parse("vitalik.starkom", VITALIK, false, false).unwrap(),
+            &ast::File {
+                path: "vitalik.starkom".to_string(),
+                line_starts: vec![],
+                tokens: vec![],
+                version: Some(ast::Version {
+                    range: None,
+                    major: 1,
+                    minor: 0,
+                    patch: 0,
+                }),
+                includes: vec![],
+                definitions: vec![ast::Definition {
+                    definition: Some(ast::definition::Definition::TemplateDefinition(
+                        ast::TemplateDefinition {
+                            range: None,
+                            name: "Vitalik".into(),
+                            params: vec![],
+                            body_index: 7,
+                        },
+                    )),
+                }],
+                main_component: Some(ast::MainComponent {
+                    range: None,
+                    public_signals: vec![],
+                    instantiation: 19,
+                }),
+                expressions: vec![
+                    ast::ExpressionNode::default(), // [0] sentinel
+                    ex(None, var("square")),        // [1] square
+                    ex(None, var("x")),             // [2] x  (lhs of x*x)
+                    ex(None, var("x")),             // [3] x  (rhs of x*x)
+                    ex(None, mul(2, 3)),            // [4] x * x
+                    ex(None, con_assign(1, 4)),     // [5] square <== x * x
+                    ex(None, var("cube")),          // [6] cube
+                    ex(None, var("square")),        // [7] square (lhs of square*x)
+                    ex(None, var("x")),             // [8] x  (rhs of square*x)
+                    ex(None, mul(7, 8)),            // [9] square * x
+                    ex(None, con_assign(6, 9)),     // [10] cube <== square * x
+                    ex(None, var("cube")),          // [11] cube
+                    ex(None, var("x")),             // [12] x  (in cube+x)
+                    ex(None, add(11, 12)),          // [13] cube + x
+                    ex(None, num("5")),             // [14] 5
+                    ex(None, add(13, 14)),          // [15] cube + x + 5
+                    ex(None, num("35")),            // [16] 35
+                    ex(None, con_eq(15, 16)),       // [17] cube + x + 5 === 35
+                    ex(None, var("Vitalik")),       // [18] Vitalik
+                    ex(
+                        None,
+                        ast::expression_node::Expression::PostfixChain(
+                            // [19] Vitalik()
+                            ast::PostfixChainExpression {
+                                operand: 18,
+                                postfix: vec![ast::PostfixExpression {
+                                    postfix: Some(ast::postfix_expression::Postfix::Invocation(
+                                        ast::postfix_expression::Invocation { arguments: vec![] },
+                                    )),
+                                }],
+                            },
+                        ),
+                    ),
+                ],
+                statements: vec![
+                    ast::StatementNode::default(), // [0] sentinel
+                    st(
+                        None,
+                        sig_decl(ast::declaration_statement::Modifier::SignalTypeInput, "x"),
+                    ), // [1] signal input x;
+                    st(
+                        None,
+                        sig_decl(ast::declaration_statement::Modifier::None, "square"),
+                    ), // [2] signal square;
+                    st(
+                        None,
+                        sig_decl(ast::declaration_statement::Modifier::None, "cube"),
+                    ), // [3] signal cube;
+                    st(None, expr_stmt(5)),        // [4] square <== x * x;
+                    st(None, expr_stmt(10)),       // [5] cube <== square * x;
+                    st(None, expr_stmt(17)),       // [6] cube + x + 5 === 35;
+                    st(
+                        None,
+                        ast::statement_node::Statement::Block(
+                            // [7] { ... }
+                            ast::Block {
+                                statements: vec![1, 2, 3, 4, 5, 6],
+                            },
+                        ),
+                    ),
+                ],
+            },
+        );
+    }
+
+    fn token(pos: usize, token: TokenType) -> Token {
+        Token {
+            offset: pos as u32,
+            r#type: token.into(),
+            label: String::default(),
+        }
+    }
+
+    fn token_with_label(pos: usize, token: TokenType, label: &str) -> Token {
+        Token {
+            offset: pos as u32,
+            r#type: token.into(),
+            label: label.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_vitalik_with_tokens() {
+        static VITALIK: &'static str = include_str!("../test/vitalik.starkom");
+        assert_ast_eq(
+            &parse("vitalik.starkom", VITALIK, true, false).unwrap(),
+            &ast::File {
+                path: "vitalik.starkom".to_string(),
+                line_starts: vec![],
+                tokens: vec![
+                    token_with_label(
+                        0,
+                        TokenType::TokenTypeSingleLineComment,
+                        " This is the circuit from Vitalik's PLONK tutorial. See",
+                    ),
+                    token_with_label(
+                        58,
+                        TokenType::TokenTypeSingleLineComment,
+                        " https://vitalik.eth.limo/general/2019/09/22/plonk.html#how-plonk-works",
+                    ),
+                    token(133, TokenType::TokenTypeKeywordPragma),
+                    token(140, TokenType::TokenTypeKeywordStarkom),
+                    token_with_label(148, TokenType::TokenTypeVersionNumber, "1.0.0"),
+                    token(153, TokenType::TokenTypeSemicolon),
+                    token(156, TokenType::TokenTypeKeywordTemplate),
+                    token_with_label(165, TokenType::TokenTypeIdentifier, "Vitalik"),
+                    token(172, TokenType::TokenTypeLeftParenthesis),
+                    token(173, TokenType::TokenTypeRightParenthesis),
+                    token(175, TokenType::TokenTypeLeftCurlyBracket),
+                    token(179, TokenType::TokenTypeKeywordSignal),
+                    token(186, TokenType::TokenTypeKeywordInput),
+                    token_with_label(192, TokenType::TokenTypeIdentifier, "x"),
+                    token(193, TokenType::TokenTypeSemicolon),
+                    token(198, TokenType::TokenTypeKeywordSignal),
+                    token_with_label(205, TokenType::TokenTypeIdentifier, "square"),
+                    token(211, TokenType::TokenTypeSemicolon),
+                    token(215, TokenType::TokenTypeKeywordSignal),
+                    token_with_label(222, TokenType::TokenTypeIdentifier, "cube"),
+                    token(226, TokenType::TokenTypeSemicolon),
+                    token_with_label(231, TokenType::TokenTypeIdentifier, "square"),
+                    token(238, TokenType::TokenTypeOperatorConstrainedAssignLeft),
+                    token_with_label(242, TokenType::TokenTypeIdentifier, "x"),
+                    token(244, TokenType::TokenTypeOperatorMultiply),
+                    token_with_label(246, TokenType::TokenTypeIdentifier, "x"),
+                    token(247, TokenType::TokenTypeSemicolon),
+                    token_with_label(251, TokenType::TokenTypeIdentifier, "cube"),
+                    token(256, TokenType::TokenTypeOperatorConstrainedAssignLeft),
+                    token_with_label(260, TokenType::TokenTypeIdentifier, "square"),
+                    token(267, TokenType::TokenTypeOperatorMultiply),
+                    token_with_label(269, TokenType::TokenTypeIdentifier, "x"),
+                    token(270, TokenType::TokenTypeSemicolon),
+                    token_with_label(275, TokenType::TokenTypeIdentifier, "cube"),
+                    token(280, TokenType::TokenTypeOperatorPlus),
+                    token_with_label(282, TokenType::TokenTypeIdentifier, "x"),
+                    token(284, TokenType::TokenTypeOperatorPlus),
+                    token_with_label(286, TokenType::TokenTypeNumber10, "5"),
+                    token(288, TokenType::TokenTypeOperatorConstrainedEquality),
+                    token_with_label(292, TokenType::TokenTypeNumber10, "35"),
+                    token(294, TokenType::TokenTypeSemicolon),
+                    token(296, TokenType::TokenTypeRightCurlyBracket),
+                    token(299, TokenType::TokenTypeKeywordComponent),
+                    token_with_label(309, TokenType::TokenTypeIdentifier, "main"),
+                    token(314, TokenType::TokenTypeOperatorAssign),
+                    token_with_label(316, TokenType::TokenTypeIdentifier, "Vitalik"),
+                    token(323, TokenType::TokenTypeLeftParenthesis),
+                    token(324, TokenType::TokenTypeRightParenthesis),
+                    token(325, TokenType::TokenTypeSemicolon),
+                    token(327, TokenType::TokenTypeEndOfFile),
+                ],
+                version: Some(ast::Version {
+                    range: None,
+                    major: 1,
+                    minor: 0,
+                    patch: 0,
+                }),
+                includes: vec![],
+                definitions: vec![ast::Definition {
+                    definition: Some(ast::definition::Definition::TemplateDefinition(
+                        ast::TemplateDefinition {
+                            range: None,
+                            name: "Vitalik".into(),
+                            params: vec![],
+                            body_index: 7,
+                        },
+                    )),
+                }],
+                main_component: Some(ast::MainComponent {
+                    range: None,
+                    public_signals: vec![],
+                    instantiation: 19,
+                }),
+                expressions: vec![
+                    ast::ExpressionNode::default(), // [0] sentinel
+                    ex(None, var("square")),        // [1] square
+                    ex(None, var("x")),             // [2] x  (lhs of x*x)
+                    ex(None, var("x")),             // [3] x  (rhs of x*x)
+                    ex(None, mul(2, 3)),            // [4] x * x
+                    ex(None, con_assign(1, 4)),     // [5] square <== x * x
+                    ex(None, var("cube")),          // [6] cube
+                    ex(None, var("square")),        // [7] square (lhs of square*x)
+                    ex(None, var("x")),             // [8] x  (rhs of square*x)
+                    ex(None, mul(7, 8)),            // [9] square * x
+                    ex(None, con_assign(6, 9)),     // [10] cube <== square * x
+                    ex(None, var("cube")),          // [11] cube
+                    ex(None, var("x")),             // [12] x  (in cube+x)
+                    ex(None, add(11, 12)),          // [13] cube + x
+                    ex(None, num("5")),             // [14] 5
+                    ex(None, add(13, 14)),          // [15] cube + x + 5
+                    ex(None, num("35")),            // [16] 35
+                    ex(None, con_eq(15, 16)),       // [17] cube + x + 5 === 35
+                    ex(None, var("Vitalik")),       // [18] Vitalik
+                    ex(
+                        None,
+                        ast::expression_node::Expression::PostfixChain(
+                            // [19] Vitalik()
+                            ast::PostfixChainExpression {
+                                operand: 18,
+                                postfix: vec![ast::PostfixExpression {
+                                    postfix: Some(ast::postfix_expression::Postfix::Invocation(
+                                        ast::postfix_expression::Invocation { arguments: vec![] },
+                                    )),
+                                }],
+                            },
+                        ),
+                    ),
+                ],
+                statements: vec![
+                    ast::StatementNode::default(), // [0] sentinel
+                    st(
+                        None,
+                        sig_decl(ast::declaration_statement::Modifier::SignalTypeInput, "x"),
+                    ), // [1] signal input x;
+                    st(
+                        None,
+                        sig_decl(ast::declaration_statement::Modifier::None, "square"),
+                    ), // [2] signal square;
+                    st(
+                        None,
+                        sig_decl(ast::declaration_statement::Modifier::None, "cube"),
+                    ), // [3] signal cube;
+                    st(None, expr_stmt(5)),        // [4] square <== x * x;
+                    st(None, expr_stmt(10)),       // [5] cube <== square * x;
+                    st(None, expr_stmt(17)),       // [6] cube + x + 5 === 35;
+                    st(
+                        None,
+                        ast::statement_node::Statement::Block(
+                            // [7] { ... }
+                            ast::Block {
+                                statements: vec![1, 2, 3, 4, 5, 6],
+                            },
+                        ),
+                    ),
+                ],
+            },
+        );
     }
 
     #[test]
     fn test_vitalik_with_ranges() {
         static VITALIK: &'static str = include_str!("../test/vitalik.starkom");
         assert_ast_eq(
-            &parse("vitalik.starkom", VITALIK, true).unwrap(),
+            &parse("vitalik.starkom", VITALIK, false, true).unwrap(),
             &ast::File {
                 path: "vitalik.starkom".to_string(),
                 line_starts: vec![
@@ -3456,103 +3743,6 @@ mod tests {
     }
 
     #[test]
-    fn test_vitalik_without_ranges() {
-        static VITALIK: &'static str = include_str!("../test/vitalik.starkom");
-        assert_ast_eq(
-            &parse("vitalik.starkom", VITALIK, false).unwrap(),
-            &ast::File {
-                path: "vitalik.starkom".to_string(),
-                line_starts: vec![],
-                tokens: vec![],
-                version: Some(ast::Version {
-                    range: None,
-                    major: 1,
-                    minor: 0,
-                    patch: 0,
-                }),
-                includes: vec![],
-                definitions: vec![ast::Definition {
-                    definition: Some(ast::definition::Definition::TemplateDefinition(
-                        ast::TemplateDefinition {
-                            range: None,
-                            name: "Vitalik".into(),
-                            params: vec![],
-                            body_index: 7,
-                        },
-                    )),
-                }],
-                main_component: Some(ast::MainComponent {
-                    range: None,
-                    public_signals: vec![],
-                    instantiation: 19,
-                }),
-                expressions: vec![
-                    ast::ExpressionNode::default(), // [0] sentinel
-                    ex(None, var("square")),        // [1] square
-                    ex(None, var("x")),             // [2] x  (lhs of x*x)
-                    ex(None, var("x")),             // [3] x  (rhs of x*x)
-                    ex(None, mul(2, 3)),            // [4] x * x
-                    ex(None, con_assign(1, 4)),     // [5] square <== x * x
-                    ex(None, var("cube")),          // [6] cube
-                    ex(None, var("square")),        // [7] square (lhs of square*x)
-                    ex(None, var("x")),             // [8] x  (rhs of square*x)
-                    ex(None, mul(7, 8)),            // [9] square * x
-                    ex(None, con_assign(6, 9)),     // [10] cube <== square * x
-                    ex(None, var("cube")),          // [11] cube
-                    ex(None, var("x")),             // [12] x  (in cube+x)
-                    ex(None, add(11, 12)),          // [13] cube + x
-                    ex(None, num("5")),             // [14] 5
-                    ex(None, add(13, 14)),          // [15] cube + x + 5
-                    ex(None, num("35")),            // [16] 35
-                    ex(None, con_eq(15, 16)),       // [17] cube + x + 5 === 35
-                    ex(None, var("Vitalik")),       // [18] Vitalik
-                    ex(
-                        None,
-                        ast::expression_node::Expression::PostfixChain(
-                            // [19] Vitalik()
-                            ast::PostfixChainExpression {
-                                operand: 18,
-                                postfix: vec![ast::PostfixExpression {
-                                    postfix: Some(ast::postfix_expression::Postfix::Invocation(
-                                        ast::postfix_expression::Invocation { arguments: vec![] },
-                                    )),
-                                }],
-                            },
-                        ),
-                    ),
-                ],
-                statements: vec![
-                    ast::StatementNode::default(), // [0] sentinel
-                    st(
-                        None,
-                        sig_decl(ast::declaration_statement::Modifier::SignalTypeInput, "x"),
-                    ), // [1] signal input x;
-                    st(
-                        None,
-                        sig_decl(ast::declaration_statement::Modifier::None, "square"),
-                    ), // [2] signal square;
-                    st(
-                        None,
-                        sig_decl(ast::declaration_statement::Modifier::None, "cube"),
-                    ), // [3] signal cube;
-                    st(None, expr_stmt(5)),        // [4] square <== x * x;
-                    st(None, expr_stmt(10)),       // [5] cube <== square * x;
-                    st(None, expr_stmt(17)),       // [6] cube + x + 5 === 35;
-                    st(
-                        None,
-                        ast::statement_node::Statement::Block(
-                            // [7] { ... }
-                            ast::Block {
-                                statements: vec![1, 2, 3, 4, 5, 6],
-                            },
-                        ),
-                    ),
-                ],
-            },
-        );
-    }
-
-    #[test]
     fn test_if_without_else_range_single_line_comment() {
         let file = in_template_ranges("if (x) { ; } // comment\n;");
         let if_statement = file
@@ -3598,8 +3788,6 @@ mod tests {
 
     #[test]
     fn test_if_without_else_range_mixed_trailing_content() {
-        // Trailing content: whitespace, single-line comment, more whitespace, multi-line comment,
-        // more whitespace.
         let file = in_template_ranges("if (x) { ; }\n// comment\n\n/* block */\n;");
         let if_statement = file
             .statements
