@@ -1,6 +1,6 @@
-use crate::ast;
+use crate::ast::{self, Token, token::Type as TokenType};
 use crate::error::{Error, Result};
-use crate::lexer::{Token, TokenEntry, tokenize};
+use crate::lexer::tokenize;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -30,7 +30,7 @@ impl NodeFrame {
         }
         static TRAILING_PATTERN: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"(?:\s|//[^\n]*|/\*(?:[^*]|\*+[^/*])*\*+/)*$").unwrap());
-        let pos = parser.tokens[0].pos;
+        let pos = parser.tokens[0].offset as usize;
         let slice = &parser.input[0..pos];
         let trailing = TRAILING_PATTERN.find(slice).map_or(0, |m| m.len());
         let length = pos - trailing - self.pos;
@@ -64,7 +64,7 @@ impl NodeFrame {
 macro_rules! assert_token {
     ($parser:expr, $token:ident) => {
         match $parser.next_token()? {
-            Token::$token => {}
+            TokenType::$token => {}
             _ => panic!("internal error"),
         }
     };
@@ -73,7 +73,7 @@ macro_rules! assert_token {
 macro_rules! expect_token {
     ($parser:expr, $token:ident, $expected:literal) => {
         match $parser.next_token()? {
-            Token::$token => Ok(()),
+            TokenType::$token => Ok(()),
             _ => $parser.error(format!("expected {}", $expected).as_str()),
         }?
     };
@@ -81,8 +81,8 @@ macro_rules! expect_token {
 
 macro_rules! parse_token {
     ($parser:expr, $token:ident, $expected:literal) => {
-        match $parser.next_token()? {
-            Token::$token(label) => Ok(label.as_str()),
+        match $parser.next_token_and_label()? {
+            (TokenType::$token, label) => Ok(label),
             _ => $parser.error(format!("expected {}", $expected).as_str()),
         }?
     };
@@ -100,7 +100,7 @@ struct Parser<'a> {
     input: &'a str,
 
     /// Token array output by the lexer.
-    tokens: &'a [TokenEntry],
+    tokens: &'a [Token],
 
     /// Line start offsets, as per the corresponding field in the root AST node. Must be empty if
     /// `with_ranges` is false.
@@ -121,7 +121,7 @@ impl<'a> Parser<'a> {
     fn new(
         path: &'a str,
         input: &'a str,
-        tokens: &'a [TokenEntry],
+        tokens: &'a [Token],
         with_ranges: bool,
         line_starts: Vec<usize>,
     ) -> Self {
@@ -144,7 +144,7 @@ impl<'a> Parser<'a> {
         Err(Error::new(
             self.path.to_string(),
             message.to_string(),
-            self.tokens[0].pos,
+            self.tokens[0].offset as usize,
             self.line_starts.as_slice(),
         ))
     }
@@ -155,29 +155,35 @@ impl<'a> Parser<'a> {
 
     fn skip_comments(&mut self) {
         while !self.tokens.is_empty() {
-            match &self.tokens[0].token {
-                Token::SingleLineComment(_) => self.advance(),
-                Token::MultiLineComment(_) => self.advance(),
+            match self.tokens[0].token_type() {
+                TokenType::TokenTypeSingleLineComment | TokenType::TokenTypeMultiLineComment => {
+                    self.advance()
+                }
                 _ => return,
             };
         }
     }
 
-    fn peek_token(&mut self) -> Result<&Token> {
+    fn peek_token(&mut self) -> Result<TokenType> {
         self.skip_comments();
         if self.tokens.is_empty() {
             return self.error("unexpected end of file");
         }
-        Ok(&self.tokens[0].token)
+        Ok(self.tokens[0].token_type())
     }
 
-    fn next_token(&mut self) -> Result<&Token> {
+    fn next_token_and_label(&mut self) -> Result<(TokenType, &str)> {
         self.skip_comments();
         if self.tokens.is_empty() {
             return self.error("unexpected end of file");
         }
-        let token = &self.tokens[0].token;
+        let token = &self.tokens[0];
         self.advance();
+        Ok((token.token_type(), token.label.as_str()))
+    }
+
+    fn next_token(&mut self) -> Result<TokenType> {
+        let (token, _) = self.next_token_and_label()?;
         Ok(token)
     }
 
@@ -210,19 +216,28 @@ impl<'a> Parser<'a> {
     fn frame(&mut self) -> NodeFrame {
         self.skip_comments();
         NodeFrame {
-            pos: self.tokens[0].pos,
+            pos: self.tokens[0].offset as usize,
         }
     }
 
     fn parse_version(&mut self) -> Result<ast::Version> {
         let frame = self.frame();
-        expect_token!(self, KeywordPragma, "`pragma`");
-        expect_token!(self, KeywordStarkom, "`starkom`");
-        let (major, minor, patch) = match *self.next_token()? {
-            Token::VersionNumber(major, minor, patch) => Ok((major, minor, patch)),
+        expect_token!(self, TokenTypeKeywordPragma, "`pragma`");
+        expect_token!(self, TokenTypeKeywordStarkom, "`starkom`");
+        let (major, minor, patch) = match self.next_token_and_label()? {
+            (TokenType::TokenTypeVersionNumber, label) => {
+                static REGEX_VERSION_NUMBER: LazyLock<Regex> =
+                    LazyLock::new(|| Regex::new(r"^(\d{1,9})\.(\d{1,9})\.(\d{1,9})\b").unwrap());
+                let captures = REGEX_VERSION_NUMBER.captures(label).unwrap();
+                Ok((
+                    captures[1].parse::<u32>().unwrap(),
+                    captures[2].parse::<u32>().unwrap(),
+                    captures[3].parse::<u32>().unwrap(),
+                ))
+            }
             _ => self.error("syntax error"),
         }?;
-        expect_token!(self, Semicolon, "semicolon");
+        expect_token!(self, TokenTypeSemicolon, "semicolon");
         Ok(ast::Version {
             range: frame.maybe_range(self),
             major,
@@ -232,17 +247,17 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_include(&mut self) -> Result<String> {
-        assert_token!(self, KeywordInclude);
-        let path = parse_token!(self, StringLiteral, "file path").to_string();
-        expect_token!(self, Semicolon, "semicolon");
+        assert_token!(self, TokenTypeKeywordInclude);
+        let path = parse_token!(self, TokenTypeStringLiteral, "file path").to_string();
+        expect_token!(self, TokenTypeSemicolon, "semicolon");
         Ok(path)
     }
 
     fn parse_tuple_or_subexpression(&mut self) -> Result<usize> {
         let frame = self.frame();
-        assert_token!(self, LeftParenthesis);
+        assert_token!(self, TokenTypeLeftParenthesis);
         match self.peek_token()? {
-            Token::RightParenthesis => {
+            TokenType::TokenTypeRightParenthesis => {
                 self.advance();
                 Ok(frame.make_expression(
                     self,
@@ -254,8 +269,8 @@ impl<'a> Parser<'a> {
             _ => {
                 let first_index = self.parse_expression()?;
                 match self.next_token()? {
-                    Token::Comma => match self.peek_token()? {
-                        Token::RightParenthesis => {
+                    TokenType::TokenTypeComma => match self.peek_token()? {
+                        TokenType::TokenTypeRightParenthesis => {
                             self.advance();
                             Ok(frame.make_expression(
                                 self,
@@ -269,8 +284,8 @@ impl<'a> Parser<'a> {
                             let mut components = vec![first_index, second_index];
                             loop {
                                 match self.next_token()? {
-                                    Token::Comma => match self.peek_token()? {
-                                        Token::RightParenthesis => {
+                                    TokenType::TokenTypeComma => match self.peek_token()? {
+                                        TokenType::TokenTypeRightParenthesis => {
                                             self.advance();
                                             return Ok(frame.make_expression(
                                                 self,
@@ -285,7 +300,7 @@ impl<'a> Parser<'a> {
                                             components.push(self.parse_expression()?);
                                         }
                                     },
-                                    Token::RightParenthesis => {
+                                    TokenType::TokenTypeRightParenthesis => {
                                         return Ok(frame.make_expression(
                                             self,
                                             ast::expression_node::Expression::Tuple(
@@ -302,7 +317,7 @@ impl<'a> Parser<'a> {
                             }
                         }
                     },
-                    Token::RightParenthesis => Ok(frame.make_expression(
+                    TokenType::TokenTypeRightParenthesis => Ok(frame.make_expression(
                         self,
                         ast::expression_node::Expression::SubExpression(ast::SubExpression {
                             inner: first_index as u32,
@@ -316,9 +331,9 @@ impl<'a> Parser<'a> {
 
     fn parse_array_literal(&mut self) -> Result<usize> {
         let frame = self.frame();
-        assert_token!(self, LeftSquareBracket);
+        assert_token!(self, TokenTypeLeftSquareBracket);
         match self.peek_token()? {
-            Token::RightSquareBracket => {
+            TokenType::TokenTypeRightSquareBracket => {
                 self.advance();
                 Ok(frame.make_expression(
                     self,
@@ -332,8 +347,8 @@ impl<'a> Parser<'a> {
                 let mut elements = vec![index];
                 loop {
                     match self.next_token()? {
-                        Token::Comma => match self.peek_token()? {
-                            Token::RightSquareBracket => {
+                        TokenType::TokenTypeComma => match self.peek_token()? {
+                            TokenType::TokenTypeRightSquareBracket => {
                                 self.advance();
                                 return Ok(frame.make_expression(
                                     self,
@@ -348,7 +363,7 @@ impl<'a> Parser<'a> {
                                 elements.push(self.parse_expression()?);
                             }
                         },
-                        Token::RightSquareBracket => {
+                        TokenType::TokenTypeRightSquareBracket => {
                             return Ok(frame.make_expression(
                                 self,
                                 ast::expression_node::Expression::ArrayLiteral(ast::ArrayLiteral {
@@ -367,26 +382,26 @@ impl<'a> Parser<'a> {
 
     fn parse_expression_leaf(&mut self) -> Result<usize> {
         match self.peek_token()? {
-            Token::LeftParenthesis => return self.parse_tuple_or_subexpression(),
-            Token::LeftSquareBracket => return self.parse_array_literal(),
+            TokenType::TokenTypeLeftParenthesis => return self.parse_tuple_or_subexpression(),
+            TokenType::TokenTypeLeftSquareBracket => return self.parse_array_literal(),
             _ => {}
         };
         let frame = self.frame();
-        match self.next_token()? {
-            Token::KeywordTrue => Ok(frame.make_expression(
+        match self.next_token_and_label()? {
+            (TokenType::TokenTypeKeywordTrue, _) => Ok(frame.make_expression(
                 self,
                 ast::expression_node::Expression::BooleanLiteral(ast::BooleanLiteral {
                     value: true,
                 }),
             )),
-            Token::KeywordFalse => Ok(frame.make_expression(
+            (TokenType::TokenTypeKeywordFalse, _) => Ok(frame.make_expression(
                 self,
                 ast::expression_node::Expression::BooleanLiteral(ast::BooleanLiteral {
                     value: false,
                 }),
             )),
-            Token::Number10(value) => {
-                let value = value.clone();
+            (TokenType::TokenTypeNumber10, value) => {
+                let value = value.to_string();
                 Ok(frame.make_expression(
                     self,
                     ast::expression_node::Expression::NumericLiteral(ast::NumericLiteral {
@@ -395,8 +410,8 @@ impl<'a> Parser<'a> {
                     }),
                 ))
             }
-            Token::Number16(value) => {
-                let value = value.clone();
+            (TokenType::TokenTypeNumber16, value) => {
+                let value = value.to_string();
                 Ok(frame.make_expression(
                     self,
                     ast::expression_node::Expression::NumericLiteral(ast::NumericLiteral {
@@ -405,8 +420,8 @@ impl<'a> Parser<'a> {
                     }),
                 ))
             }
-            Token::Number8(value) => {
-                let value = value.clone();
+            (TokenType::TokenTypeNumber8, value) => {
+                let value = value.to_string();
                 Ok(frame.make_expression(
                     self,
                     ast::expression_node::Expression::NumericLiteral(ast::NumericLiteral {
@@ -415,15 +430,15 @@ impl<'a> Parser<'a> {
                     }),
                 ))
             }
-            Token::StringLiteral(value) => {
-                let value = value.clone();
+            (TokenType::TokenTypeStringLiteral, value) => {
+                let value = value.to_string();
                 Ok(frame.make_expression(
                     self,
                     ast::expression_node::Expression::StringLiteral(ast::StringLiteral { value }),
                 ))
             }
-            Token::Identifier(name) => {
-                let name = name.clone();
+            (TokenType::TokenTypeIdentifier, name) => {
+                let name = name.to_string();
                 Ok(frame.make_expression(
                     self,
                     ast::expression_node::Expression::Variable(ast::VariableExpression { name }),
@@ -434,9 +449,9 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_invocation(&mut self) -> Result<ast::postfix_expression::Invocation> {
-        assert_token!(self, LeftParenthesis);
+        assert_token!(self, TokenTypeLeftParenthesis);
         match self.peek_token()? {
-            Token::RightParenthesis => {
+            TokenType::TokenTypeRightParenthesis => {
                 self.advance();
                 Ok(ast::postfix_expression::Invocation { arguments: vec![] })
             }
@@ -444,10 +459,10 @@ impl<'a> Parser<'a> {
                 let mut arguments = vec![self.parse_expression()?];
                 loop {
                     match self.next_token()? {
-                        Token::Comma => {
+                        TokenType::TokenTypeComma => {
                             arguments.push(self.parse_expression()?);
                         }
-                        Token::RightParenthesis => {
+                        TokenType::TokenTypeRightParenthesis => {
                             return Ok(ast::postfix_expression::Invocation {
                                 arguments: arguments.to_u32(),
                             });
@@ -467,23 +482,24 @@ impl<'a> Parser<'a> {
         let mut postfix = vec![];
         loop {
             match self.peek_token()? {
-                Token::Dot => {
+                TokenType::TokenTypeDot => {
                     self.advance();
-                    let field_name = parse_token!(self, Identifier, "identifier").to_string();
+                    let field_name =
+                        parse_token!(self, TokenTypeIdentifier, "identifier").to_string();
                     postfix.push(ast::PostfixExpression {
                         postfix: Some(ast::postfix_expression::Postfix::FieldName(field_name)),
                     });
                 }
-                Token::LeftParenthesis => {
+                TokenType::TokenTypeLeftParenthesis => {
                     let invocation = self.parse_invocation()?;
                     postfix.push(ast::PostfixExpression {
                         postfix: Some(ast::postfix_expression::Postfix::Invocation(invocation)),
                     });
                 }
-                Token::LeftSquareBracket => {
+                TokenType::TokenTypeLeftSquareBracket => {
                     self.advance();
                     let subscript_index = self.parse_expression()?;
-                    expect_token!(self, RightSquareBracket, "`]`");
+                    expect_token!(self, TokenTypeRightSquareBracket, "`]`");
                     postfix.push(ast::PostfixExpression {
                         postfix: Some(ast::postfix_expression::Postfix::SubscriptExpression(
                             subscript_index as u32,
@@ -514,29 +530,29 @@ impl<'a> Parser<'a> {
         let mut types = vec![];
         loop {
             match self.peek_token()? {
-                Token::OperatorIncrement => {
+                TokenType::TokenTypeOperatorIncrement => {
                     self.advance();
                     types.push(ast::prefix_chain_expression::Type::PrefixExressionIncrement.into());
                 }
-                Token::OperatorDecrement => {
+                TokenType::TokenTypeOperatorDecrement => {
                     self.advance();
                     types.push(ast::prefix_chain_expression::Type::PrefixExressionDecrement.into());
                 }
-                Token::OperatorLogicalNot => {
+                TokenType::TokenTypeOperatorLogicalNot => {
                     self.advance();
                     types
                         .push(ast::prefix_chain_expression::Type::PrefixExressionLogicalNot.into());
                 }
-                Token::OperatorBitwiseNot => {
+                TokenType::TokenTypeOperatorBitwiseNot => {
                     self.advance();
                     types
                         .push(ast::prefix_chain_expression::Type::PrefixExressionBitwiseNot.into());
                 }
-                Token::OperatorPlus => {
+                TokenType::TokenTypeOperatorPlus => {
                     self.advance();
                     types.push(ast::prefix_chain_expression::Type::PrefixExressionUnaryPlus.into());
                 }
-                Token::OperatorMinus => {
+                TokenType::TokenTypeOperatorMinus => {
                     self.advance();
                     types
                         .push(ast::prefix_chain_expression::Type::PrefixExressionUnaryMinus.into());
@@ -565,7 +581,7 @@ impl<'a> Parser<'a> {
         let frame = self.frame();
         let lhs_index = self.parse_prefix_chain()?;
         match self.peek_token()? {
-            Token::OperatorPower => {
+            TokenType::TokenTypeOperatorPower => {
                 self.advance();
                 let rhs_index = self.parse_exponentiation()?;
                 Ok(frame.make_expression(
@@ -586,7 +602,7 @@ impl<'a> Parser<'a> {
         let mut index = self.parse_exponentiation()?;
         loop {
             match self.peek_token()? {
-                Token::OperatorMultiply => {
+                TokenType::TokenTypeOperatorMultiply => {
                     self.advance();
                     let rhs_index = self.parse_exponentiation()?;
                     index = frame.clone().make_expression(
@@ -598,7 +614,7 @@ impl<'a> Parser<'a> {
                         }),
                     );
                 }
-                Token::OperatorDivide => {
+                TokenType::TokenTypeOperatorDivide => {
                     self.advance();
                     let rhs_index = self.parse_exponentiation()?;
                     index = frame.clone().make_expression(
@@ -610,7 +626,7 @@ impl<'a> Parser<'a> {
                         }),
                     );
                 }
-                Token::OperatorDivideInteger => {
+                TokenType::TokenTypeOperatorDivideInteger => {
                     self.advance();
                     let rhs_index = self.parse_exponentiation()?;
                     index = frame.clone().make_expression(
@@ -623,7 +639,7 @@ impl<'a> Parser<'a> {
                         }),
                     );
                 }
-                Token::OperatorModulus => {
+                TokenType::TokenTypeOperatorModulus => {
                     self.advance();
                     let rhs_index = self.parse_exponentiation()?;
                     index = frame.clone().make_expression(
@@ -647,7 +663,7 @@ impl<'a> Parser<'a> {
         let mut index = self.parse_multiplicative_operations()?;
         loop {
             match self.peek_token()? {
-                Token::OperatorPlus => {
+                TokenType::TokenTypeOperatorPlus => {
                     self.advance();
                     let rhs_index = self.parse_multiplicative_operations()?;
                     index = frame.clone().make_expression(
@@ -659,7 +675,7 @@ impl<'a> Parser<'a> {
                         }),
                     );
                 }
-                Token::OperatorMinus => {
+                TokenType::TokenTypeOperatorMinus => {
                     self.advance();
                     let rhs_index = self.parse_multiplicative_operations()?;
                     index = frame.clone().make_expression(
@@ -683,7 +699,7 @@ impl<'a> Parser<'a> {
         let mut index = self.parse_additive_operations()?;
         loop {
             match self.peek_token()? {
-                Token::OperatorShiftLeft => {
+                TokenType::TokenTypeOperatorShiftLeft => {
                     self.advance();
                     let rhs_index = self.parse_additive_operations()?;
                     index = frame.clone().make_expression(
@@ -696,7 +712,7 @@ impl<'a> Parser<'a> {
                         }),
                     );
                 }
-                Token::OperatorShiftRight => {
+                TokenType::TokenTypeOperatorShiftRight => {
                     self.advance();
                     let rhs_index = self.parse_additive_operations()?;
                     index = frame.clone().make_expression(
@@ -719,7 +735,7 @@ impl<'a> Parser<'a> {
     fn parse_bitwise_and(&mut self) -> Result<usize> {
         let frame = self.frame();
         let mut index = self.parse_bitwise_shifts()?;
-        while let Token::OperatorBitwiseAnd = self.peek_token()? {
+        while let TokenType::TokenTypeOperatorBitwiseAnd = self.peek_token()? {
             self.advance();
             let rhs_index = self.parse_bitwise_shifts()?;
             index = frame.clone().make_expression(
@@ -737,7 +753,7 @@ impl<'a> Parser<'a> {
     fn parse_bitwise_xor(&mut self) -> Result<usize> {
         let frame = self.frame();
         let mut index = self.parse_bitwise_and()?;
-        while let Token::OperatorBitwiseXor = self.peek_token()? {
+        while let TokenType::TokenTypeOperatorBitwiseXor = self.peek_token()? {
             self.advance();
             let rhs_index = self.parse_bitwise_and()?;
             index = frame.clone().make_expression(
@@ -755,7 +771,7 @@ impl<'a> Parser<'a> {
     fn parse_bitwise_or(&mut self) -> Result<usize> {
         let frame = self.frame();
         let mut index = self.parse_bitwise_xor()?;
-        while let Token::OperatorBitwiseOr = self.peek_token()? {
+        while let TokenType::TokenTypeOperatorBitwiseOr = self.peek_token()? {
             self.advance();
             let rhs_index = self.parse_bitwise_xor()?;
             index = frame.clone().make_expression(
@@ -775,7 +791,7 @@ impl<'a> Parser<'a> {
         let mut index = self.parse_bitwise_or()?;
         loop {
             match self.peek_token()? {
-                Token::OperatorLessThan => {
+                TokenType::TokenTypeOperatorLessThan => {
                     self.advance();
                     let rhs_index = self.parse_bitwise_or()?;
                     index = frame.clone().make_expression(
@@ -787,7 +803,7 @@ impl<'a> Parser<'a> {
                         }),
                     );
                 }
-                Token::OperatorLessThanOrEqualTo => {
+                TokenType::TokenTypeOperatorLessThanOrEqualTo => {
                     self.advance();
                     let rhs_index = self.parse_bitwise_or()?;
                     index = frame.clone().make_expression(
@@ -801,7 +817,7 @@ impl<'a> Parser<'a> {
                         }),
                     );
                 }
-                Token::OperatorGreaterThan => {
+                TokenType::TokenTypeOperatorGreaterThan => {
                     self.advance();
                     let rhs_index = self.parse_bitwise_or()?;
                     index = frame.clone().make_expression(
@@ -814,7 +830,7 @@ impl<'a> Parser<'a> {
                         }),
                     );
                 }
-                Token::OperatorGreaterThanOrEqualTo => {
+                TokenType::TokenTypeOperatorGreaterThanOrEqualTo => {
                     self.advance();
                     let rhs_index = self.parse_bitwise_or()?;
                     index = frame.clone().make_expression(
@@ -840,7 +856,7 @@ impl<'a> Parser<'a> {
         let mut index = self.parse_relational_operations()?;
         loop {
             match self.peek_token()? {
-                Token::OperatorCompareEqual => {
+                TokenType::TokenTypeOperatorCompareEqual => {
                     self.advance();
                     let rhs_index = self.parse_relational_operations()?;
                     index = frame.clone().make_expression(
@@ -852,7 +868,7 @@ impl<'a> Parser<'a> {
                         }),
                     );
                 }
-                Token::OperatorCompareNotEqual => {
+                TokenType::TokenTypeOperatorCompareNotEqual => {
                     self.advance();
                     let rhs_index = self.parse_relational_operations()?;
                     index = frame.clone().make_expression(
@@ -875,7 +891,7 @@ impl<'a> Parser<'a> {
     fn parse_logical_and(&mut self) -> Result<usize> {
         let frame = self.frame();
         let mut index = self.parse_equality_operations()?;
-        while let Token::OperatorLogicalAnd = self.peek_token()? {
+        while let TokenType::TokenTypeOperatorLogicalAnd = self.peek_token()? {
             self.advance();
             let rhs_index = self.parse_equality_operations()?;
             index = frame.clone().make_expression(
@@ -893,7 +909,7 @@ impl<'a> Parser<'a> {
     fn parse_logical_or(&mut self) -> Result<usize> {
         let frame = self.frame();
         let mut index = self.parse_logical_and()?;
-        while let Token::OperatorLogicalOr = self.peek_token()? {
+        while let TokenType::TokenTypeOperatorLogicalOr = self.peek_token()? {
             self.advance();
             let rhs_index = self.parse_logical_and()?;
             index = frame.clone().make_expression(
@@ -930,77 +946,77 @@ impl<'a> Parser<'a> {
         let frame = self.frame();
         let lhs_index = self.parse_logical_or()?;
         match self.peek_token()? {
-            Token::OperatorAssign => self.add_variable_assignment(
+            TokenType::TokenTypeOperatorAssign => self.add_variable_assignment(
                 frame.clone(),
                 lhs_index,
                 ast::assign_expression::Type::AssignmentTypeSimple,
             ),
-            Token::OperatorCompoundAdd => self.add_variable_assignment(
+            TokenType::TokenTypeOperatorCompoundAdd => self.add_variable_assignment(
                 frame.clone(),
                 lhs_index,
                 ast::assign_expression::Type::AssignmentTypeCompoundAdd,
             ),
-            Token::OperatorCompoundSubtract => self.add_variable_assignment(
+            TokenType::TokenTypeOperatorCompoundSubtract => self.add_variable_assignment(
                 frame.clone(),
                 lhs_index,
                 ast::assign_expression::Type::AssignmentTypeCompoundSubtract,
             ),
-            Token::OperatorCompoundMultiply => self.add_variable_assignment(
+            TokenType::TokenTypeOperatorCompoundMultiply => self.add_variable_assignment(
                 frame.clone(),
                 lhs_index,
                 ast::assign_expression::Type::AssignmentTypeCompoundMultiply,
             ),
-            Token::OperatorCompoundPower => self.add_variable_assignment(
+            TokenType::TokenTypeOperatorCompoundPower => self.add_variable_assignment(
                 frame.clone(),
                 lhs_index,
                 ast::assign_expression::Type::AssignmentTypeCompoundPower,
             ),
-            Token::OperatorCompoundDivide => self.add_variable_assignment(
+            TokenType::TokenTypeOperatorCompoundDivide => self.add_variable_assignment(
                 frame.clone(),
                 lhs_index,
                 ast::assign_expression::Type::AssignmentTypeCompoundDivide,
             ),
-            Token::OperatorCompoundDivideInteger => self.add_variable_assignment(
+            TokenType::TokenTypeOperatorCompoundDivideInteger => self.add_variable_assignment(
                 frame.clone(),
                 lhs_index,
                 ast::assign_expression::Type::AssignmentTypeCompoundDivideInteger,
             ),
-            Token::OperatorCompoundModulus => self.add_variable_assignment(
+            TokenType::TokenTypeOperatorCompoundModulus => self.add_variable_assignment(
                 frame.clone(),
                 lhs_index,
                 ast::assign_expression::Type::AssignmentTypeCompoundModulus,
             ),
-            Token::OperatorCompoundLogicalAnd => self.add_variable_assignment(
+            TokenType::TokenTypeOperatorCompoundLogicalAnd => self.add_variable_assignment(
                 frame.clone(),
                 lhs_index,
                 ast::assign_expression::Type::AssignmentTypeCompoundLogicalAnd,
             ),
-            Token::OperatorCompoundLogicalOr => self.add_variable_assignment(
+            TokenType::TokenTypeOperatorCompoundLogicalOr => self.add_variable_assignment(
                 frame.clone(),
                 lhs_index,
                 ast::assign_expression::Type::AssignmentTypeCompoundLogicalOr,
             ),
-            Token::OperatorCompoundBitwiseAnd => self.add_variable_assignment(
+            TokenType::TokenTypeOperatorCompoundBitwiseAnd => self.add_variable_assignment(
                 frame.clone(),
                 lhs_index,
                 ast::assign_expression::Type::AssignmentTypeCompoundBitwiseAnd,
             ),
-            Token::OperatorCompoundBitwiseOr => self.add_variable_assignment(
+            TokenType::TokenTypeOperatorCompoundBitwiseOr => self.add_variable_assignment(
                 frame.clone(),
                 lhs_index,
                 ast::assign_expression::Type::AssignmentTypeCompoundBitwiseOr,
             ),
-            Token::OperatorCompoundBitwiseXor => self.add_variable_assignment(
+            TokenType::TokenTypeOperatorCompoundBitwiseXor => self.add_variable_assignment(
                 frame.clone(),
                 lhs_index,
                 ast::assign_expression::Type::AssignmentTypeCompoundBitwiseXor,
             ),
-            Token::OperatorCompoundShiftLeft => self.add_variable_assignment(
+            TokenType::TokenTypeOperatorCompoundShiftLeft => self.add_variable_assignment(
                 frame.clone(),
                 lhs_index,
                 ast::assign_expression::Type::AssignmentTypeCompoundShiftLeft,
             ),
-            Token::OperatorCompoundShiftRight => self.add_variable_assignment(
+            TokenType::TokenTypeOperatorCompoundShiftRight => self.add_variable_assignment(
                 frame.clone(),
                 lhs_index,
                 ast::assign_expression::Type::AssignmentTypeCompoundShiftRight,
@@ -1017,7 +1033,7 @@ impl<'a> Parser<'a> {
         let frame = self.frame();
         let lhs_index = self.parse_expression()?;
         match self.peek_token()? {
-            Token::OperatorUnconstrainedAssignLeft => {
+            TokenType::TokenTypeOperatorUnconstrainedAssignLeft => {
                 self.advance();
                 let rhs_index = self.parse_expression()?;
                 Ok(frame.make_expression(
@@ -1031,7 +1047,7 @@ impl<'a> Parser<'a> {
                     ),
                 ))
             }
-            Token::OperatorUnconstrainedAssignRight => {
+            TokenType::TokenTypeOperatorUnconstrainedAssignRight => {
                 self.advance();
                 let rhs_index = self.parse_expression()?;
                 Ok(frame.make_expression(
@@ -1045,7 +1061,7 @@ impl<'a> Parser<'a> {
                     ),
                 ))
             }
-            Token::OperatorConstrainedAssignLeft => {
+            TokenType::TokenTypeOperatorConstrainedAssignLeft => {
                 self.advance();
                 let rhs_index = self.parse_expression()?;
                 Ok(frame.make_expression(
@@ -1059,7 +1075,7 @@ impl<'a> Parser<'a> {
                     ),
                 ))
             }
-            Token::OperatorConstrainedAssignRight => {
+            TokenType::TokenTypeOperatorConstrainedAssignRight => {
                 self.advance();
                 let rhs_index = self.parse_expression()?;
                 Ok(frame.make_expression(
@@ -1073,7 +1089,7 @@ impl<'a> Parser<'a> {
                     ),
                 ))
             }
-            Token::OperatorConstrainedEquality => {
+            TokenType::TokenTypeOperatorConstrainedEquality => {
                 self.advance();
                 let rhs_index = self.parse_expression()?;
                 Ok(frame.make_expression(
@@ -1091,14 +1107,16 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_declaration_inner(&mut self) -> Result<ast::declaration_statement::Declaration> {
-        let (name, modifier) = match self.next_token()? {
-            Token::Identifier(name) => (name.clone(), ast::declaration_statement::Modifier::None),
-            Token::KeywordInput => {
-                let name = parse_token!(self, Identifier, "identifier").to_string();
+        let (name, modifier) = match self.next_token_and_label()? {
+            (TokenType::TokenTypeIdentifier, name) => {
+                (name.to_string(), ast::declaration_statement::Modifier::None)
+            }
+            (TokenType::TokenTypeKeywordInput, _) => {
+                let name = parse_token!(self, TokenTypeIdentifier, "identifier").to_string();
                 (name, ast::declaration_statement::Modifier::SignalTypeInput)
             }
-            Token::KeywordOutput => {
-                let name = parse_token!(self, Identifier, "identifier").to_string();
+            (TokenType::TokenTypeKeywordOutput, _) => {
+                let name = parse_token!(self, TokenTypeIdentifier, "identifier").to_string();
                 (name, ast::declaration_statement::Modifier::SignalTypeOutput)
             }
             _ => {
@@ -1106,12 +1124,12 @@ impl<'a> Parser<'a> {
             }
         };
         let mut dimensions = vec![];
-        while let Token::LeftSquareBracket = self.peek_token()? {
+        while let TokenType::TokenTypeLeftSquareBracket = self.peek_token()? {
             self.advance();
             dimensions.push(self.parse_expression()?);
-            expect_token!(self, RightSquareBracket, "`]`");
+            expect_token!(self, TokenTypeRightSquareBracket, "`]`");
         }
-        let initializer = if let Token::OperatorAssign = self.peek_token()? {
+        let initializer = if let TokenType::TokenTypeOperatorAssign = self.peek_token()? {
             self.advance();
             self.parse_expression()?
         } else {
@@ -1134,25 +1152,31 @@ impl<'a> Parser<'a> {
             Some(expected_type) => {
                 match expected_type {
                     ast::declaration_statement::Type::DeclarationTypeVariable => {
-                        expect_token!(self, KeywordVar, "`var`")
+                        expect_token!(self, TokenTypeKeywordVar, "`var`")
                     }
                     ast::declaration_statement::Type::DeclarationTypeConstant => {
-                        expect_token!(self, KeywordConst, "`const`")
+                        expect_token!(self, TokenTypeKeywordConst, "`const`")
                     }
                     ast::declaration_statement::Type::DeclarationTypeSignal => {
-                        expect_token!(self, KeywordSignal, "`signal`")
+                        expect_token!(self, TokenTypeKeywordSignal, "`signal`")
                     }
                     ast::declaration_statement::Type::DeclarationTypeComponent => {
-                        expect_token!(self, KeywordComponent, "`component`")
+                        expect_token!(self, TokenTypeKeywordComponent, "`component`")
                     }
                 };
                 expected_type
             }
             None => match self.next_token()? {
-                Token::KeywordVar => ast::declaration_statement::Type::DeclarationTypeVariable,
-                Token::KeywordConst => ast::declaration_statement::Type::DeclarationTypeConstant,
-                Token::KeywordSignal => ast::declaration_statement::Type::DeclarationTypeSignal,
-                Token::KeywordComponent => {
+                TokenType::TokenTypeKeywordVar => {
+                    ast::declaration_statement::Type::DeclarationTypeVariable
+                }
+                TokenType::TokenTypeKeywordConst => {
+                    ast::declaration_statement::Type::DeclarationTypeConstant
+                }
+                TokenType::TokenTypeKeywordSignal => {
+                    ast::declaration_statement::Type::DeclarationTypeSignal
+                }
+                TokenType::TokenTypeKeywordComponent => {
                     ast::declaration_statement::Type::DeclarationTypeComponent
                 }
                 _ => {
@@ -1164,10 +1188,10 @@ impl<'a> Parser<'a> {
         let mut declarations = vec![self.parse_declaration_inner()?];
         loop {
             match self.next_token()? {
-                Token::Comma => {
+                TokenType::TokenTypeComma => {
                     declarations.push(self.parse_declaration_inner()?);
                 }
-                Token::Semicolon => {
+                TokenType::TokenTypeSemicolon => {
                     return Ok(frame.make_statement(
                         self,
                         ast::statement_node::Statement::Declaration(ast::DeclarationStatement {
@@ -1185,13 +1209,13 @@ impl<'a> Parser<'a> {
 
     fn parse_if_statement(&mut self) -> Result<usize> {
         let frame = self.frame();
-        assert_token!(self, KeywordIf);
-        expect_token!(self, LeftParenthesis, "`(`");
+        assert_token!(self, TokenTypeKeywordIf);
+        expect_token!(self, TokenTypeLeftParenthesis, "`(`");
         let condition_index = self.parse_expression()?;
-        expect_token!(self, RightParenthesis, "`)`");
+        expect_token!(self, TokenTypeRightParenthesis, "`)`");
         let then_branch_index = self.parse_statement()?;
         match self.peek_token()? {
-            Token::KeywordElse => {
+            TokenType::TokenTypeKeywordElse => {
                 self.advance();
                 let else_branch_index = self.parse_statement()?;
                 Ok(frame.make_statement(
@@ -1216,10 +1240,10 @@ impl<'a> Parser<'a> {
 
     fn parse_while_loop_statement(&mut self) -> Result<usize> {
         let frame = self.frame();
-        assert_token!(self, KeywordWhile);
-        expect_token!(self, LeftParenthesis, "`(`");
+        assert_token!(self, TokenTypeKeywordWhile);
+        expect_token!(self, TokenTypeLeftParenthesis, "`(`");
         let condition_index = self.parse_expression()?;
-        expect_token!(self, RightParenthesis, "`)`");
+        expect_token!(self, TokenTypeRightParenthesis, "`)`");
         let loop_body_index = self.parse_statement()?;
         Ok(frame.make_statement(
             self,
@@ -1232,13 +1256,13 @@ impl<'a> Parser<'a> {
 
     fn parse_do_while_loop_statement(&mut self) -> Result<usize> {
         let frame = self.frame();
-        assert_token!(self, KeywordDo);
+        assert_token!(self, TokenTypeKeywordDo);
         let loop_body_index = self.parse_statement()?;
-        expect_token!(self, KeywordWhile, "`while`");
-        expect_token!(self, LeftParenthesis, "`(`");
+        expect_token!(self, TokenTypeKeywordWhile, "`while`");
+        expect_token!(self, TokenTypeLeftParenthesis, "`(`");
         let condition_index = self.parse_expression()?;
-        expect_token!(self, RightParenthesis, "`)`");
-        expect_token!(self, Semicolon, "semicolon");
+        expect_token!(self, TokenTypeRightParenthesis, "`)`");
+        expect_token!(self, TokenTypeSemicolon, "semicolon");
         Ok(frame.make_statement(
             self,
             ast::statement_node::Statement::DoWhileLoopStatement(ast::DoWhileLoopStatement {
@@ -1250,37 +1274,37 @@ impl<'a> Parser<'a> {
 
     fn parse_for_loop_statement(&mut self) -> Result<usize> {
         let frame = self.frame();
-        assert_token!(self, KeywordFor);
-        expect_token!(self, LeftParenthesis, "`(`");
+        assert_token!(self, TokenTypeKeywordFor);
+        expect_token!(self, TokenTypeLeftParenthesis, "`(`");
         let initializer_index = match self.peek_token()? {
-            Token::Semicolon => self.parse_empty_statement(),
-            Token::KeywordVar => self.parse_declaration_statement(Some(
+            TokenType::TokenTypeSemicolon => self.parse_empty_statement(),
+            TokenType::TokenTypeKeywordVar => self.parse_declaration_statement(Some(
                 ast::declaration_statement::Type::DeclarationTypeVariable,
             )),
-            Token::KeywordConst => self.parse_declaration_statement(Some(
+            TokenType::TokenTypeKeywordConst => self.parse_declaration_statement(Some(
                 ast::declaration_statement::Type::DeclarationTypeConstant,
             )),
             _ => self.parse_expression_statement(),
         }?;
         let condition_index = match self.peek_token()? {
-            Token::Semicolon => {
+            TokenType::TokenTypeSemicolon => {
                 self.advance();
                 0
             }
             _ => {
                 let condition_index = self.parse_expression()?;
-                expect_token!(self, Semicolon, "semicolon");
+                expect_token!(self, TokenTypeSemicolon, "semicolon");
                 condition_index
             }
         };
         let step_index = match self.peek_token()? {
-            Token::RightParenthesis => {
+            TokenType::TokenTypeRightParenthesis => {
                 self.advance();
                 0
             }
             _ => {
                 let step_index = self.parse_expression()?;
-                expect_token!(self, RightParenthesis, "`)`");
+                expect_token!(self, TokenTypeRightParenthesis, "`)`");
                 step_index
             }
         };
@@ -1298,8 +1322,8 @@ impl<'a> Parser<'a> {
 
     fn parse_break_statement(&mut self) -> Result<usize> {
         let frame = self.frame();
-        assert_token!(self, KeywordBreak);
-        expect_token!(self, Semicolon, "semicolon");
+        assert_token!(self, TokenTypeKeywordBreak);
+        expect_token!(self, TokenTypeSemicolon, "semicolon");
         Ok(frame.make_statement(
             self,
             ast::statement_node::Statement::BreakStatement(ast::BreakStatement {}),
@@ -1308,8 +1332,8 @@ impl<'a> Parser<'a> {
 
     fn parse_continue_statement(&mut self) -> Result<usize> {
         let frame = self.frame();
-        assert_token!(self, KeywordContinue);
-        expect_token!(self, Semicolon, "semicolon");
+        assert_token!(self, TokenTypeKeywordContinue);
+        expect_token!(self, TokenTypeSemicolon, "semicolon");
         Ok(frame.make_statement(
             self,
             ast::statement_node::Statement::ContinueStatement(ast::ContinueStatement {}),
@@ -1318,9 +1342,9 @@ impl<'a> Parser<'a> {
 
     fn parse_return_statement(&mut self) -> Result<usize> {
         let frame = self.frame();
-        assert_token!(self, KeywordReturn);
+        assert_token!(self, TokenTypeKeywordReturn);
         let value_index = self.parse_expression()?;
-        expect_token!(self, Semicolon, "semicolon");
+        expect_token!(self, TokenTypeSemicolon, "semicolon");
         Ok(frame.make_statement(
             self,
             ast::statement_node::Statement::ReturnStatement(ast::ReturnStatement {
@@ -1331,9 +1355,9 @@ impl<'a> Parser<'a> {
 
     fn parse_log_statement(&mut self) -> Result<usize> {
         let frame = self.frame();
-        assert_token!(self, KeywordLog);
+        assert_token!(self, TokenTypeKeywordLog);
         let value_index = self.parse_expression()?;
-        expect_token!(self, Semicolon, "semicolon");
+        expect_token!(self, TokenTypeSemicolon, "semicolon");
         Ok(frame.make_statement(
             self,
             ast::statement_node::Statement::LogStatement(ast::LogStatement {
@@ -1344,9 +1368,9 @@ impl<'a> Parser<'a> {
 
     fn parse_assert_statement(&mut self) -> Result<usize> {
         let frame = self.frame();
-        assert_token!(self, KeywordAssert);
+        assert_token!(self, TokenTypeKeywordAssert);
         let condition_index = self.parse_expression()?;
-        expect_token!(self, Semicolon, "semicolon");
+        expect_token!(self, TokenTypeSemicolon, "semicolon");
         Ok(frame.make_statement(
             self,
             ast::statement_node::Statement::AssertStatement(ast::AssertStatement {
@@ -1358,7 +1382,7 @@ impl<'a> Parser<'a> {
     fn parse_expression_statement(&mut self) -> Result<usize> {
         let frame = self.frame();
         let expression_index = self.parse_signal_assignment()?;
-        expect_token!(self, Semicolon, "semicolon");
+        expect_token!(self, TokenTypeSemicolon, "semicolon");
         Ok(frame.make_statement(
             self,
             ast::statement_node::Statement::Expression(ast::ExpressionStatement {
@@ -1369,7 +1393,7 @@ impl<'a> Parser<'a> {
 
     fn parse_empty_statement(&mut self) -> Result<usize> {
         let frame = self.frame();
-        assert_token!(self, Semicolon);
+        assert_token!(self, TokenTypeSemicolon);
         Ok(frame.make_statement(
             self,
             ast::statement_node::Statement::Empty(ast::EmptyStatement {}),
@@ -1378,11 +1402,11 @@ impl<'a> Parser<'a> {
 
     fn parse_block(&mut self) -> Result<usize> {
         let frame = self.frame();
-        expect_token!(self, LeftCurlyBracket, "`{`");
+        expect_token!(self, TokenTypeLeftCurlyBracket, "`{`");
         let mut statements = vec![];
         loop {
             match self.peek_token()? {
-                Token::RightCurlyBracket => {
+                TokenType::TokenTypeRightCurlyBracket => {
                     self.advance();
                     return Ok(frame.make_statement(
                         self,
@@ -1400,45 +1424,45 @@ impl<'a> Parser<'a> {
 
     fn parse_statement(&mut self) -> Result<usize> {
         match self.peek_token()? {
-            Token::Semicolon => self.parse_empty_statement(),
-            Token::LeftCurlyBracket => self.parse_block(),
-            Token::KeywordVar => self.parse_declaration_statement(None),
-            Token::KeywordConst => self.parse_declaration_statement(None),
-            Token::KeywordSignal => self.parse_declaration_statement(None),
-            Token::KeywordComponent => self.parse_declaration_statement(None),
-            Token::KeywordIf => self.parse_if_statement(),
-            Token::KeywordWhile => self.parse_while_loop_statement(),
-            Token::KeywordDo => self.parse_do_while_loop_statement(),
-            Token::KeywordFor => self.parse_for_loop_statement(),
-            Token::KeywordBreak => self.parse_break_statement(),
-            Token::KeywordContinue => self.parse_continue_statement(),
-            Token::KeywordReturn => self.parse_return_statement(),
-            Token::KeywordLog => self.parse_log_statement(),
-            Token::KeywordAssert => self.parse_assert_statement(),
+            TokenType::TokenTypeSemicolon => self.parse_empty_statement(),
+            TokenType::TokenTypeLeftCurlyBracket => self.parse_block(),
+            TokenType::TokenTypeKeywordVar => self.parse_declaration_statement(None),
+            TokenType::TokenTypeKeywordConst => self.parse_declaration_statement(None),
+            TokenType::TokenTypeKeywordSignal => self.parse_declaration_statement(None),
+            TokenType::TokenTypeKeywordComponent => self.parse_declaration_statement(None),
+            TokenType::TokenTypeKeywordIf => self.parse_if_statement(),
+            TokenType::TokenTypeKeywordWhile => self.parse_while_loop_statement(),
+            TokenType::TokenTypeKeywordDo => self.parse_do_while_loop_statement(),
+            TokenType::TokenTypeKeywordFor => self.parse_for_loop_statement(),
+            TokenType::TokenTypeKeywordBreak => self.parse_break_statement(),
+            TokenType::TokenTypeKeywordContinue => self.parse_continue_statement(),
+            TokenType::TokenTypeKeywordReturn => self.parse_return_statement(),
+            TokenType::TokenTypeKeywordLog => self.parse_log_statement(),
+            TokenType::TokenTypeKeywordAssert => self.parse_assert_statement(),
             _ => self.parse_expression_statement(),
         }
     }
 
     fn parse_template(&mut self) -> Result<ast::TemplateDefinition> {
         let frame = self.frame();
-        assert_token!(self, KeywordTemplate);
-        let name = parse_token!(self, Identifier, "identifier").to_string();
-        expect_token!(self, LeftParenthesis, "`(`");
+        assert_token!(self, TokenTypeKeywordTemplate);
+        let name = parse_token!(self, TokenTypeIdentifier, "identifier").to_string();
+        expect_token!(self, TokenTypeLeftParenthesis, "`(`");
         let mut params: Vec<String> = vec![];
-        match self.next_token()? {
-            Token::Identifier(param_name) => {
-                params.push(param_name.clone());
+        match self.next_token_and_label()? {
+            (TokenType::TokenTypeIdentifier, param_name) => {
+                params.push(param_name.to_string());
                 loop {
                     match self.next_token()? {
-                        Token::Comma => match self.next_token()? {
-                            Token::Identifier(param_name) => {
-                                params.push(param_name.clone());
+                        TokenType::TokenTypeComma => match self.next_token_and_label()? {
+                            (TokenType::TokenTypeIdentifier, param_name) => {
+                                params.push(param_name.to_string());
                             }
                             _ => {
                                 return self.error("syntax error");
                             }
                         },
-                        Token::RightParenthesis => {
+                        TokenType::TokenTypeRightParenthesis => {
                             break;
                         }
                         _ => {
@@ -1447,13 +1471,13 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            Token::RightParenthesis => {}
+            (TokenType::TokenTypeRightParenthesis, _) => {}
             _ => {
                 return self.error("syntax error");
             }
         }
         let body_index = match self.peek_token()? {
-            Token::LeftCurlyBracket => self.parse_block(),
+            TokenType::TokenTypeLeftCurlyBracket => self.parse_block(),
             _ => self.error("syntax error"),
         }?;
         Ok(ast::TemplateDefinition {
@@ -1466,24 +1490,24 @@ impl<'a> Parser<'a> {
 
     fn parse_function(&mut self) -> Result<ast::FunctionDefinition> {
         let frame = self.frame();
-        assert_token!(self, KeywordFunction);
-        let name = parse_token!(self, Identifier, "identifier").to_string();
-        expect_token!(self, LeftParenthesis, "`(`");
+        assert_token!(self, TokenTypeKeywordFunction);
+        let name = parse_token!(self, TokenTypeIdentifier, "identifier").to_string();
+        expect_token!(self, TokenTypeLeftParenthesis, "`(`");
         let mut params: Vec<String> = vec![];
-        match self.next_token()? {
-            Token::Identifier(param_name) => {
-                params.push(param_name.clone());
+        match self.next_token_and_label()? {
+            (TokenType::TokenTypeIdentifier, param_name) => {
+                params.push(param_name.to_string());
                 loop {
                     match self.next_token()? {
-                        Token::Comma => match self.next_token()? {
-                            Token::Identifier(param_name) => {
-                                params.push(param_name.clone());
+                        TokenType::TokenTypeComma => match self.next_token_and_label()? {
+                            (TokenType::TokenTypeIdentifier, param_name) => {
+                                params.push(param_name.to_string());
                             }
                             _ => {
                                 return self.error("syntax error");
                             }
                         },
-                        Token::RightParenthesis => {
+                        TokenType::TokenTypeRightParenthesis => {
                             break;
                         }
                         _ => {
@@ -1492,13 +1516,13 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            Token::RightParenthesis => {}
+            (TokenType::TokenTypeRightParenthesis, _) => {}
             _ => {
                 return self.error("syntax error");
             }
         }
         let body_index = match self.peek_token()? {
-            Token::LeftCurlyBracket => self.parse_block(),
+            TokenType::TokenTypeLeftCurlyBracket => self.parse_block(),
             _ => self.error("syntax error"),
         }?;
         Ok(ast::FunctionDefinition {
@@ -1511,32 +1535,32 @@ impl<'a> Parser<'a> {
 
     fn parse_main_component(&mut self) -> Result<ast::MainComponent> {
         let frame = self.frame();
-        assert_token!(self, KeywordComponent);
-        if parse_token!(self, Identifier, "`main`") != "main" {
+        assert_token!(self, TokenTypeKeywordComponent);
+        if parse_token!(self, TokenTypeIdentifier, "`main`") != "main" {
             return self.error("the main component must be called `main`");
         }
         let mut public_signals = vec![];
-        if let Token::LeftCurlyBracket = self.peek_token()? {
+        if let TokenType::TokenTypeLeftCurlyBracket = self.peek_token()? {
             self.advance();
-            expect_token!(self, KeywordPublic, "`public`");
-            expect_token!(self, LeftSquareBracket, "`[`");
-            match self.next_token()? {
-                Token::Identifier(signal_name) => {
-                    public_signals.push(signal_name.clone());
+            expect_token!(self, TokenTypeKeywordPublic, "`public`");
+            expect_token!(self, TokenTypeLeftSquareBracket, "`[`");
+            match self.next_token_and_label()? {
+                (TokenType::TokenTypeIdentifier, signal_name) => {
+                    public_signals.push(signal_name.to_string());
                     loop {
                         match self.next_token()? {
-                            Token::Comma => match self.next_token()? {
-                                Token::Identifier(signal_name) => {
-                                    public_signals.push(signal_name.clone());
+                            TokenType::TokenTypeComma => match self.next_token_and_label()? {
+                                (TokenType::TokenTypeIdentifier, signal_name) => {
+                                    public_signals.push(signal_name.to_string());
                                 }
-                                Token::RightSquareBracket => {
+                                (TokenType::TokenTypeRightSquareBracket, _) => {
                                     break;
                                 }
                                 _ => {
                                     return self.error("syntax error");
                                 }
                             },
-                            Token::RightSquareBracket => {
+                            TokenType::TokenTypeRightSquareBracket => {
                                 break;
                             }
                             _ => {
@@ -1545,16 +1569,16 @@ impl<'a> Parser<'a> {
                         }
                     }
                 }
-                Token::RightSquareBracket => {}
+                (TokenType::TokenTypeRightSquareBracket, _) => {}
                 _ => {
                     return self.error("syntax error");
                 }
             }
-            expect_token!(self, RightCurlyBracket, "`}`");
+            expect_token!(self, TokenTypeRightCurlyBracket, "`}`");
         }
-        expect_token!(self, OperatorAssign, "`=`");
+        expect_token!(self, TokenTypeOperatorAssign, "`=`");
         let instantiation_index = self.parse_expression()?;
-        expect_token!(self, Semicolon, "semicolon");
+        expect_token!(self, TokenTypeSemicolon, "semicolon");
         Ok(ast::MainComponent {
             range: frame.maybe_range(self),
             public_signals,
@@ -1568,31 +1592,31 @@ impl<'a> Parser<'a> {
         let mut includes: Vec<String> = vec![];
         let mut definitions: Vec<ast::Definition> = vec![];
         loop {
-            match *self.peek_token()? {
-                Token::KeywordInclude => {
+            match self.peek_token()? {
+                TokenType::TokenTypeKeywordInclude => {
                     includes.push(self.parse_include()?);
                 }
-                Token::KeywordTemplate => {
+                TokenType::TokenTypeKeywordTemplate => {
                     definitions.push(ast::Definition {
                         definition: Some(ast::definition::Definition::TemplateDefinition(
                             self.parse_template()?,
                         )),
                     });
                 }
-                Token::KeywordFunction => {
+                TokenType::TokenTypeKeywordFunction => {
                     definitions.push(ast::Definition {
                         definition: Some(ast::definition::Definition::FunctionDefinition(
                             self.parse_function()?,
                         )),
                     });
                 }
-                Token::KeywordComponent => {
+                TokenType::TokenTypeKeywordComponent => {
                     match self.main_component {
                         Some(_) => return self.error("there can be only one main component"),
                         None => self.main_component = Some(self.parse_main_component()?),
                     };
                 }
-                Token::EndOfFile => {
+                TokenType::TokenTypeEndOfFile => {
                     assert_eq!(self.tokens.len(), 1);
                     return Ok(ast::File {
                         path: self.path.to_string(),
@@ -1604,6 +1628,7 @@ impl<'a> Parser<'a> {
                         } else {
                             vec![]
                         },
+                        tokens: self.tokens.to_owned(),
                         version: Some(version),
                         includes,
                         definitions,
@@ -3341,6 +3366,7 @@ mod tests {
                     0, 58, 132, 133, 155, 156, 177, 195, 196, 213, 228, 229, 249, 272, 273, 296,
                     298, 299, 327,
                 ],
+                tokens: vec![],
                 version: Some(ast::Version {
                     range: r(133, 21),
                     major: 1,
@@ -3437,6 +3463,7 @@ mod tests {
             &ast::File {
                 path: "vitalik.starkom".to_string(),
                 line_starts: vec![],
+                tokens: vec![],
                 version: Some(ast::Version {
                     range: None,
                     major: 1,

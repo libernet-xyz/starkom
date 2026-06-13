@@ -14,6 +14,137 @@ message Range {
   uint32 length = 2;
 }
 
+// Represents a lexical token in a Starkom source file.
+message Token {
+  enum Type {
+    TOKEN_TYPE_INVALID = 0;
+
+    TOKEN_TYPE_VERSION_NUMBER = 1;
+
+    TOKEN_TYPE_SINGLE_LINE_COMMENT = 2;
+    TOKEN_TYPE_MULTI_LINE_COMMENT = 3;
+
+    TOKEN_TYPE_IDENTIFIER = 4;
+
+    TOKEN_TYPE_KEYWORD_ASSERT = 5;
+    TOKEN_TYPE_KEYWORD_BREAK = 6;
+    TOKEN_TYPE_KEYWORD_BUS = 7;
+    TOKEN_TYPE_KEYWORD_COMPONENT = 8;
+    TOKEN_TYPE_KEYWORD_CONST = 9;
+    TOKEN_TYPE_KEYWORD_CONTINUE = 10;
+    TOKEN_TYPE_KEYWORD_DO = 11;
+    TOKEN_TYPE_KEYWORD_ELSE = 12;
+    TOKEN_TYPE_KEYWORD_FALSE = 13;
+    TOKEN_TYPE_KEYWORD_FOR = 14;
+    TOKEN_TYPE_KEYWORD_FUNCTION = 15;
+    TOKEN_TYPE_KEYWORD_IF = 16;
+    TOKEN_TYPE_KEYWORD_INCLUDE = 17;
+    TOKEN_TYPE_KEYWORD_INPUT = 18;
+    TOKEN_TYPE_KEYWORD_LOG = 19;
+    TOKEN_TYPE_KEYWORD_OUTPUT = 20;
+    TOKEN_TYPE_KEYWORD_PARALLEL = 21;
+    TOKEN_TYPE_KEYWORD_PRAGMA = 22;
+    TOKEN_TYPE_KEYWORD_PUBLIC = 23;
+    TOKEN_TYPE_KEYWORD_RETURN = 24;
+    TOKEN_TYPE_KEYWORD_SIGNAL = 25;
+    TOKEN_TYPE_KEYWORD_STARKOM = 26;
+    TOKEN_TYPE_KEYWORD_TEMPLATE = 27;
+    TOKEN_TYPE_KEYWORD_TRUE = 28;
+    TOKEN_TYPE_KEYWORD_VAR = 29;
+    TOKEN_TYPE_KEYWORD_WHILE = 30;
+
+    TOKEN_TYPE_NUMBER_8 = 31;
+    TOKEN_TYPE_NUMBER_10 = 32;
+    TOKEN_TYPE_NUMBER_16 = 33;
+    TOKEN_TYPE_STRING_LITERAL = 34;
+
+    TOKEN_TYPE_LEFT_PARENTHESIS = 35;
+    TOKEN_TYPE_RIGHT_PARENTHESIS = 36;
+    TOKEN_TYPE_LEFT_SQUARE_BRACKET = 37;
+    TOKEN_TYPE_RIGHT_SQUARE_BRACKET = 38;
+    TOKEN_TYPE_LEFT_CURLY_BRACKET = 39;
+    TOKEN_TYPE_RIGHT_CURLY_BRACKET = 40;
+
+    TOKEN_TYPE_OPERATOR_UNCONSTRAINED_ASSIGN_LEFT = 41;
+    TOKEN_TYPE_OPERATOR_UNCONSTRAINED_ASSIGN_RIGHT = 42;
+    TOKEN_TYPE_OPERATOR_CONSTRAINED_ASSIGN_LEFT = 43;
+    TOKEN_TYPE_OPERATOR_CONSTRAINED_ASSIGN_RIGHT = 44;
+    TOKEN_TYPE_OPERATOR_CONSTRAINED_EQUALITY = 45;
+
+    TOKEN_TYPE_OPERATOR_ASSIGN = 46;
+    TOKEN_TYPE_OPERATOR_PLUS = 47;
+    TOKEN_TYPE_OPERATOR_MINUS = 48;
+    TOKEN_TYPE_OPERATOR_MULTIPLY = 49;
+    TOKEN_TYPE_OPERATOR_POWER = 50;
+    TOKEN_TYPE_OPERATOR_DIVIDE = 51;
+    TOKEN_TYPE_OPERATOR_DIVIDE_INTEGER = 52;
+    TOKEN_TYPE_OPERATOR_MODULUS = 53;
+    TOKEN_TYPE_OPERATOR_INCREMENT = 54;
+    TOKEN_TYPE_OPERATOR_DECREMENT = 55;
+
+    TOKEN_TYPE_OPERATOR_LOGICAL_AND = 56;
+    TOKEN_TYPE_OPERATOR_LOGICAL_OR = 57;
+    TOKEN_TYPE_OPERATOR_LOGICAL_NOT = 58;
+
+    TOKEN_TYPE_OPERATOR_BITWISE_AND = 59;
+    TOKEN_TYPE_OPERATOR_BITWISE_OR = 60;
+    TOKEN_TYPE_OPERATOR_BITWISE_XOR = 61;
+    TOKEN_TYPE_OPERATOR_BITWISE_NOT = 62;
+    TOKEN_TYPE_OPERATOR_SHIFT_LEFT = 63;
+    TOKEN_TYPE_OPERATOR_SHIFT_RIGHT = 64;
+
+    TOKEN_TYPE_OPERATOR_COMPOUND_ADD = 65;
+    TOKEN_TYPE_OPERATOR_COMPOUND_SUBTRACT = 66;
+    TOKEN_TYPE_OPERATOR_COMPOUND_MULTIPLY = 67;
+    TOKEN_TYPE_OPERATOR_COMPOUND_POWER = 68;
+    TOKEN_TYPE_OPERATOR_COMPOUND_DIVIDE = 69;
+    TOKEN_TYPE_OPERATOR_COMPOUND_DIVIDE_INTEGER = 70;
+    TOKEN_TYPE_OPERATOR_COMPOUND_MODULUS = 71;
+
+    TOKEN_TYPE_OPERATOR_COMPOUND_LOGICAL_AND = 72;
+    TOKEN_TYPE_OPERATOR_COMPOUND_LOGICAL_OR = 73;
+
+    TOKEN_TYPE_OPERATOR_COMPOUND_BITWISE_AND = 74;
+    TOKEN_TYPE_OPERATOR_COMPOUND_BITWISE_OR = 75;
+    TOKEN_TYPE_OPERATOR_COMPOUND_BITWISE_XOR = 76;
+    TOKEN_TYPE_OPERATOR_COMPOUND_SHIFT_LEFT = 77;
+    TOKEN_TYPE_OPERATOR_COMPOUND_SHIFT_RIGHT = 78;
+
+    TOKEN_TYPE_OPERATOR_COMPARE_EQUAL = 79;
+    TOKEN_TYPE_OPERATOR_COMPARE_NOT_EQUAL = 80;
+    TOKEN_TYPE_OPERATOR_LESS_THAN = 81;
+    TOKEN_TYPE_OPERATOR_LESS_THAN_OR_EQUAL_TO = 82;
+    TOKEN_TYPE_OPERATOR_GREATER_THAN = 83;
+    TOKEN_TYPE_OPERATOR_GREATER_THAN_OR_EQUAL_TO = 84;
+
+    TOKEN_TYPE_DOT = 85;
+    TOKEN_TYPE_COMMA = 86;
+    TOKEN_TYPE_COLON = 87;
+    TOKEN_TYPE_SEMICOLON = 88;
+
+    TOKEN_TYPE_END_OF_FILE = 89;
+  }
+
+  // Byte offset where the token is located within the original source file.
+  uint32 offset = 1;
+
+  // Token type.
+  Type type = 2;
+
+  // Token label, required for the following token types:
+  //
+  //   * for TOKEN_TYPE_VERSION_NUMBER the label is the version number, eg. `1.23.45`;
+  //   * for TOKEN_TYPE_SINGLE_LINE_COMMENT the label is the full content of the comment not
+  //     including the leading double slashes and the trailing newline;
+  //   * for TOKEN_TYPE_MULTI_LINE_COMMENT the label is the full content of the comment not
+  //     including the opening `/*` sequence and the closing `*/` sequence;
+  //   * for TOKEN_TYPE_IDENTIFIER the label is the identifier;
+  //   * for number and string literals the label is the literal exactly as it is expressed in the
+  //     original source file (string literals include double quotes and have all escape codes
+  //     unprocessed).
+  string label = 3;
+}
+
 // Root of the AST for a Starkom source file.
 message File {
   // Path of the parsed source file.
@@ -26,17 +157,21 @@ message File {
   // binary search is sufficient to retrieve the row index of a certain AST node.
   repeated uint32 line_starts = 2;
 
+  // If parsing with lexical tokens has been requested, this array contains the list of lexical
+  // tokens of the original source file.
+  repeated Token tokens = 3;
+
   // Mandatory `pragma starkom` version declaration.
-  Version version = 3;
+  Version version = 4;
 
   // Inclusions of other Starkom sources.
-  repeated string includes = 4;
+  repeated string includes = 5;
 
   // Function and template definitions.
-  repeated Definition definitions = 5;
+  repeated Definition definitions = 6;
 
   // Main component definition (absent in library-only files).
-  MainComponent main_component = 6;
+  MainComponent main_component = 7;
 
   // Expression pool.
   //
@@ -45,7 +180,7 @@ message File {
   //
   // The first element of this array is always unused so that index 0 can be used as a sentinel
   // value.
-  repeated ExpressionNode expressions = 7;
+  repeated ExpressionNode expressions = 8;
 
   // Statement pool.
   //
@@ -54,7 +189,7 @@ message File {
   //
   // The first element of this array is always unused so that index 0 can be used as a sentinel
   // value.
-  repeated StatementNode statements = 8;
+  repeated StatementNode statements = 9;
 }
 
 // `pragma starkom 1.2.3`

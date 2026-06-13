@@ -14,6 +14,12 @@ pub mod ast {
     include!(concat!(env!("OUT_DIR"), "/starkom.ast.v1.rs"));
 }
 
+impl ast::Token {
+    pub fn token_type(&self) -> ast::token::Type {
+        ast::token::Type::try_from(self.r#type).unwrap_or_default()
+    }
+}
+
 #[wasm_bindgen]
 pub struct TextCoordinates {
     pub row: usize,
