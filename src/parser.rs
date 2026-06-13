@@ -1660,7 +1660,7 @@ impl<'a> Parser<'a> {
 }
 
 #[wasm_bindgen]
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 pub struct Settings {
     pub with_tokens: bool,
     pub with_ranges: bool,
@@ -2590,15 +2590,7 @@ mod tests {
 
     // Parse a source string and panic on error; all test-only parse calls go through here.
     fn p(source: &str) -> ast::File {
-        parse(
-            "test",
-            source,
-            Settings {
-                with_tokens: false,
-                with_ranges: false,
-            },
-        )
-        .unwrap()
+        parse("test", source, Settings::default()).unwrap()
     }
 
     fn p_ranges(source: &str) -> ast::File {
@@ -2733,10 +2725,7 @@ mod tests {
             parse(
                 "test",
                 "pragma starkom 0.0.0;\ncomponent main = T();\ncomponent main = T();\n",
-                Settings {
-                    with_tokens: false,
-                    with_ranges: false
-                },
+                Settings::default(),
             )
             .is_err()
         );
@@ -3397,44 +3386,20 @@ mod tests {
     #[test]
     fn test_statements_fixture() {
         static SRC: &str = include_str!("../test/statements.starkom");
-        parse(
-            "statements.starkom",
-            SRC,
-            Settings {
-                with_tokens: false,
-                with_ranges: false,
-            },
-        )
-        .unwrap();
+        parse("statements.starkom", SRC, Settings::default()).unwrap();
     }
 
     #[test]
     fn test_expressions_fixture() {
         static SRC: &str = include_str!("../test/expressions.starkom");
-        parse(
-            "statements.starkom",
-            SRC,
-            Settings {
-                with_tokens: false,
-                with_ranges: false,
-            },
-        )
-        .unwrap();
+        parse("statements.starkom", SRC, Settings::default()).unwrap();
     }
 
     #[test]
     fn test_vitalik() {
         static VITALIK: &'static str = include_str!("../test/vitalik.starkom");
         assert_ast_eq(
-            &parse(
-                "vitalik.starkom",
-                VITALIK,
-                Settings {
-                    with_tokens: false,
-                    with_ranges: false,
-                },
-            )
-            .unwrap(),
+            &parse("vitalik.starkom", VITALIK, Settings::default()).unwrap(),
             &ast::File {
                 path: "vitalik.starkom".to_string(),
                 line_starts: vec![],
